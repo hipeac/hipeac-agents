@@ -1,0 +1,67 @@
+[project]
+name = "hipeac-agents"
+version = "0.1.0"
+description = "AI agent collection for HiPEAC."
+authors = [
+  {name = "Eneko Illarramendi", email = "eneko@illarra.com"}
+]
+license = {text = "MIT"}
+requires-python = "~=3.14.0"
+dependencies = [
+  "agentmail",
+  "firecrawl-py",
+  "langchain",
+  "langchain-mcp-adapters",
+  "langgraph",
+  "pydantic",
+  "pyyaml",
+  "sentry-sdk",
+]
+
+[dependency-groups]
+dev = [
+  "deadcode",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-cov",
+  "pytest-xdist",
+  "ruff",
+]
+
+[tool.coverage.run]
+data_file = ".coverage_py/data"
+omit = [
+  "*/tests/**",
+]
+
+[tool.coverage.html]
+directory = ".coverage_py"
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "raise NotImplementedError", "def __repr__", "if TYPE_CHECKING:"]
+show_missing = true
+
+[tool.pytest.ini_options]
+# Coverage is opt-in: pass --cov=hipeac_agents explicitly (CI does).
+addopts = "-n auto"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+pythonpath = ["."]
+markers = [
+  "unit: mark a test as a unit test (no external services)",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "UP", "B", "SIM", "I", "S", "T", "D", "Q"]
+ignore = ["D105", "D106", "D203", "D213", "SIM105"]
+
+[tool.ruff.lint.isort]
+lines-after-imports = 2
+
+[tool.ruff.lint.per-file-ignores]
+"hipeac_agents/cli.py" = ["T201"]
+"tests/**" = ["B017", "D", "E501", "S101", "S105", "S106", "S314", "S608", "T201"]
