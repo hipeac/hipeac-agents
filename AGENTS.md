@@ -67,7 +67,6 @@ Conventional Commits: `type(scope): description` — imperative, lowercase, no t
 ### Agent layout
 
 - One subpackage per agent under `hipeac_agents/agents/<agent_name>/`: `graph.py`, `state.py`, `nodes/`.
-- One package per node under `nodes/<node_name>/`: `prompts.py` (the node's LLM prompt constants), `models.py` (its structured-output models), one module for its judgement-free logic (`gates.py` / `tallies.py`), and `node.py` (orchestration). Prompt + model + logic together make the node file/package the reviewable unit of judgement; small nodes may keep it all in one file until they need the split.
 - Node service boundaries enforced: nodes receive already-built clients, only what their protocol exposes (e.g. pure grouping/tallying node gets none; digest node gets `mail` send plus read-only `vision`). Never pass a node more clients than its skill-design counterpart allows.
 - Judgement-free logic (gates, tallies, thresholds, ranking): plain synchronous type-hinted code, callable without an LLM. Prompts handle only judgement (relevance, tiering, grouping, prose).
 
@@ -82,10 +81,9 @@ Conventional Commits: `type(scope): description` — imperative, lowercase, no t
 - `hipeac_agents/mcp_clients.py` is the only place `MultiServerMCPClient` is constructed. Nodes and the CLI never import provider SDKs or `mcp_clients.py` — providers are wired in `services/factory.py` only.
 - If a feature needs new HiPEAC data, add the tool to `hipeac-mcp`, don't reach around it.
 
-### Storage
+### Data model conventions
 
-- `hipeac_agents/storage/workspace.py` is the only module that touches the filesystem data directory. Nodes and CLI commands go through it, never `open()` directly.
-- Write-once and append-only enforced by the storage functions themselves (raise on violation), not caller discipline.
+Module names encode a model's lifecycle: `schemas.py` = persisted workspace files, `state.py` = one run's graph state, `nodes/*/models.py` = LLM structured-output models (paired with `prompts.py`). Never mix: a persisted type never lives in `state.py`; an LLM-output type never lives in `schemas.py`.
 
 ## Error monitoring (Sentry)
 

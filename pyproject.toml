@@ -9,13 +9,17 @@ license = {text = "MIT"}
 requires-python = "~=3.14.0"
 dependencies = [
   "agentmail",
+  "feedparser>=6.0.14",
   "firecrawl-py",
   "langchain",
   "langchain-mcp-adapters",
+  "langchain-openai",
   "langgraph",
+  "mistune",
   "pydantic",
   "pyyaml",
   "sentry-sdk",
+  "w3lib>=2.4.1",
 ]
 
 [dependency-groups]

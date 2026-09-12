@@ -1,0 +1,684 @@
+"""The harvest node's channels: one function per collection channel.
+
+Four channels: web, newsletter, board tips, and the general sweep. The sweep
+approximates Deep Research with one Firecrawl search per theme. The
+verification gate (``_gate_candidate``) is shared by all four channels.
+"""
+
+import logging
+from datetime import UTC, date, datetime, time, timedelta
+from typing import Any
+
+from hipeac_agents.agents.vision_watch import schemas
+from hipeac_agents.agents.vision_watch import settings as watch_settings
+from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, RejectedItem
+from hipeac_agents.agents.vision_watch.state import SourceOutcome
+from hipeac_agents.services.factory import Services
+
+from .context import HarvestContext
+from .gates import (
+    cap_tier,
+    duplicate_gate,
+    extract_links,
+    headline_in_body,
+    http_url_is_dead,
+    keyword_hits,
+    parse_iso_date,
+    window_gate,
+)
+from .models import CandidateItem
+
+
+logger = logging.getLogger(__name__)
+
+
+def _days_outside(item_date: date, window_start: date, window_end: date) -> int:
+    """Days a date falls outside the harvest window (0 when inside).
+
+    :param item_date: The item's publication date.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :returns: Distance in days; 0 when inside the window.
+    """
+    if window_start <= item_date <= window_end:
+        return 0
+    return (window_start - item_date).days if item_date < window_start else (item_date - window_end).days
+
+
+def _reject(candidate: Any, source_id: str, reason: str, detail: str = "") -> RejectedItem:
+    """Build a rejected item from a failed candidate.
+
+    :param candidate: The candidate that failed a gate.
+    :param source_id: The source the candidate came from.
+    :param reason: One of the documented rejection reasons.
+    :param detail: Optional extra detail for the audit file.
+    :returns: The rejected item.
+    """
+    return RejectedItem(
+        url=candidate.url,
+        claimed_title=candidate.title,
+        source_id=source_id,
+        reason=reason,
+        detail=detail,
+        summary=candidate.summary,
+    )
+
+
+async def _gate_candidate(
+    ctx: HarvestContext,
+    services: Services,
+    candidate: Any,
+    source: schemas.SourceEntry | None,
+    window_start: date,
+    window_end: date,
+    prior: list[FindingsFile],
+    themes: list[schemas.ThemeDef],
+    fallback_source_id: str,
+    access_method: str,
+) -> tuple[list[Finding], list[RejectedItem]]:
+    """Run the window/theme/duplicate/verification gates on one candidate.
+
+    Gate failures never drop silently: every reject carries its reason.
+
+    :param candidate: A ``CandidateItem`` from the extraction call.
+    :param source: The catalog source the candidate came from, if any.
+    :param fallback_source_id: ``"sweep"`` or ``"board-tip"`` for non-catalog items.
+    :param access_method: e.g. ``"firecrawl"``, ``"newsletter"``, ``"board-tip"``.
+    :returns: ``(verified_findings, rejected_items)`` for this candidate.
+    """
+    source_id = source.id if source else fallback_source_id
+    item_date = parse_iso_date(candidate.date) or parse_iso_date(candidate.summary)
+
+    if not window_gate(item_date, window_start, window_end):
+        days_out = _days_outside(item_date, window_start, window_end)
+        detail = f"near_window ({days_out}d outside) published {item_date.isoformat()}" if days_out <= 7 else ""
+        return [], [_reject(candidate, source_id, "out_of_window", detail)]
+
+    if duplicate_gate(candidate.url, prior):
+        return [], [_reject(candidate, source_id, "duplicate")]
+
+    # Cheap gates before paying for anything: a candidate whose text hits
+    # no theme keyword is off-theme without a scrape or a judgement call;
+    # a certainly-dead URL dies without a Firecrawl call.
+    all_keywords = [keyword for theme in themes for keyword in theme.keywords]
+    if keyword_hits(f"{candidate.title} {candidate.summary}", all_keywords) == 0:
+        return [], [_reject(candidate, source_id, "off_theme")]
+    if http_url_is_dead(candidate.url):
+        return [], [_reject(candidate, source_id, "url_404")]
+
+    page = await services.crawl.scrape(candidate.url)
+
+    if page is None:
+        return [], [_reject(candidate, source_id, "url_404")]
+
+    if item_date is None:
+        item_date = parse_iso_date(page.published_at or "")
+        if item_date and not window_gate(item_date, window_start, window_end):
+            days_out = _days_outside(item_date, window_start, window_end)
+            detail = f"near_window ({days_out}d outside) published {item_date.isoformat()}" if days_out <= 7 else ""
+            return [], [_reject(candidate, source_id, "out_of_window", detail)]
+
+    verdict = await ctx.gate_candidate(candidate.title, candidate.summary, page.title, themes)
+
+    if not verdict.title_matches:
+        return [], [_reject(candidate, source_id, "title_mismatch", verdict.title_detail)]
+
+    if not verdict.theme_ids:
+        return [], [_reject(candidate, source_id, "off_theme")]
+
+    # Trust the judgement call's assignment — it sees every theme definition
+    # and keyword and understands the text; a literal keyword-subset check
+    # here would veto correct semantic assignments.
+    theme_ids = [theme_id for theme_id in verdict.theme_ids if theme_id in {t.theme for t in themes}]
+
+    finding = Finding(
+        id="",
+        date=item_date or window_end,
+        title=candidate.title,
+        url=page.url or candidate.url,
+        source_id=source_id,
+        region=source.region if source else "global",
+        tier=cap_tier(verdict.tier, source.tier if source else 4),
+        theme_ids=theme_ids,
+        datapoint=verdict.datapoint or candidate.datapoint,
+        summary=candidate.summary or verdict.title_detail,
+        access_method=access_method,
+    )
+
+    return [finding], []
+
+
+def parse_feed_entries(xml: str, window_start: date, window_end: date, limit: int = 40) -> list[CandidateItem]:
+    """Parse an RSS/Atom document into in-window candidate items.
+
+    Deterministic: no LLM, no Firecrawl. Entries are filtered by publish date
+    before any further work — only items inside the harvest window survive,
+    so old feed history never reaches the gates.
+
+    :param xml: The raw feed document.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param limit: Maximum entries to consider (newest first).
+    :returns: Candidates with real links and publish dates, in-window only.
+    """
+    from email.utils import parsedate_to_datetime
+
+    import feedparser
+
+    parsed = feedparser.parse(xml)
+    items: list[CandidateItem] = []
+
+    for entry in parsed.entries[:limit]:
+        link = getattr(entry, "link", "") or ""
+        if not link:
+            continue
+
+        published_raw = getattr(entry, "published", "") or getattr(entry, "updated", "") or ""
+        entry_date: date | None = None
+        try:
+            entry_date = parsedate_to_datetime(published_raw).date()
+        except TypeError, ValueError:
+            struct = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+            if struct:
+                entry_date = date(struct.tm_year, struct.tm_mon, struct.tm_mday)
+
+        # Undated entries stay in (the gate handles unknown dates); dated
+        # entries outside the window are dropped here, for free.
+        if entry_date is not None and not (window_start <= entry_date <= window_end):
+            continue
+
+        items.append(
+            CandidateItem(
+                title=(getattr(entry, "title", "") or "").strip(),
+                url=link,
+                date=entry_date.isoformat() if entry_date else "",
+                summary=(getattr(entry, "summary", "") or "").strip()[:500],
+            )
+        )
+    return items
+
+
+async def harvest_feed_source(
+    ctx: HarvestContext,
+    services: Services,
+    source: schemas.SourceEntry,
+    window_start: date,
+    window_end: date,
+    prior: list[FindingsFile],
+    themes: list[schemas.ThemeDef],
+) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
+    """One feed-channel source: parse its RSS/Atom directly, gate the entries.
+
+    Feeds are deterministic XML — fetched with a plain GET and parsed with
+    feedparser, so the listing step costs no Firecrawl call and no extraction
+    judgement call. Entries carry real links and publish dates; each still
+    goes through the full verification gate (cached item scrape + merged
+    gate call).
+
+    :param ctx: The harvest context holding the LLM runners.
+    :param services: The wired service clients.
+    :param source: The due catalog source with a ``feed_url``.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param prior: Recent findings files, for duplicate detection.
+    :param themes: The watched themes.
+    :returns: ``(findings, rejected, outcome)`` for the source.
+    """
+    feed_url = source.feed_url
+    if not feed_url:
+        # No feed declared: investigate the page the expensive way.
+        return await harvest_web_source(ctx, services, source, window_start, window_end, prior, themes)
+
+    xml = await services.crawl.fetch_feed(feed_url)
+
+    if xml is None:
+        # Feed fetch failed — fall back to page scraping so the source is
+        # still checked, just the expensive way.
+        return await harvest_web_source(ctx, services, source, window_start, window_end, prior, themes)
+
+    candidates = parse_feed_entries(xml, window_start, window_end)
+    verified: list[Finding] = []
+    rejected: list[RejectedItem] = []
+
+    for candidate in candidates:
+        findings, rejects = await _gate_candidate(
+            ctx, services, candidate, source, window_start, window_end, prior, themes, source.id, "direct"
+        )
+        verified.extend(findings)
+        rejected.extend(rejects)
+
+    return (
+        verified,
+        rejected,
+        _log_outcome(
+            SourceOutcome(
+                source_id=source.id,
+                status="collected" if verified or rejected else "empty",
+                verified=len(verified),
+                rejected=len(rejected),
+            )
+        ),
+    )
+
+
+async def harvest_web_source(
+    ctx: HarvestContext,
+    services: Services,
+    source: schemas.SourceEntry,
+    window_start: date,
+    window_end: date,
+    prior: list[FindingsFile],
+    themes: list[schemas.ThemeDef],
+) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
+    """One web-channel source (feed/scrape through the crawl service).
+
+    :param ctx: The harvest context holding the LLM runners.
+    :param services: The wired service clients.
+    :param source: The due catalog source.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param prior: Recent findings files, for duplicate detection.
+    :param themes: The watched themes.
+    :returns: ``(findings, rejected, outcome)`` for the source.
+    """
+    if source.bot_protected:
+        return (
+            [],
+            [],
+            SourceOutcome(
+                source_id=source.id,
+                status="blocked",
+                detail="bot_protected — Deep Research escalation not wired up (TODO v1)",
+            ),
+        )
+
+    target = source.feed_url or source.url
+    page = await services.crawl.scrape(target)
+
+    if page is None or not page.markdown:
+        return [], [], SourceOutcome(source_id=source.id, status="failed", detail=f"scrape failed: {target}")
+
+    candidates = (await ctx.extract_candidates(page.markdown)).items
+    verified: list[Finding] = []
+    rejected: list[RejectedItem] = []
+
+    for candidate in candidates:
+        findings, rejects = await _gate_candidate(
+            ctx, services, candidate, source, window_start, window_end, prior, themes, "sweep", "firecrawl"
+        )
+        verified.extend(findings)
+        rejected.extend(rejects)
+
+    return (
+        verified,
+        rejected,
+        _log_outcome(
+            SourceOutcome(
+                source_id=source.id,
+                status="collected" if verified else "empty",
+                verified=len(verified),
+                rejected=len(rejected),
+            )
+        ),
+    )
+
+
+async def harvest_newsletter_source(
+    ctx: HarvestContext,
+    services: Services,
+    source: schemas.SourceEntry,
+    messages: list,
+    window_start: date,
+    window_end: date,
+    prior: list[FindingsFile],
+    themes: list[schemas.ThemeDef],
+) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
+    """Process one catalog source's attributed inbox messages as its newsletter channel.
+
+    Messages are attributed to the source by sender before this is called;
+    the newsletter itself is the primary source: the checked-in-body gate
+    (``headline_in_body``) replaces the page-title comparison, and the final
+    URL after the redirect chain goes into the finding.
+
+    :param ctx: The harvest context holding the LLM runners.
+    :param services: The wired service clients.
+    :param source: The catalog source the messages were attributed to.
+    :param messages: The attributed inbox messages for this source.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param prior: Recent findings files, for duplicate detection.
+    :param themes: The watched themes.
+    :returns: ``(findings, rejected, outcome)`` for the source.
+    """
+    if services.mail is None:
+        return [], [], SourceOutcome(source_id=source.id, status="failed", detail="mail service not configured")
+    inbox = watch_settings.AGENTMAIL_INBOX_VISION_WATCH
+    if not inbox:
+        return [], [], SourceOutcome(source_id=source.id, status="failed", detail="harvest inbox not configured")
+
+    verified: list[Finding] = []
+    rejected: list[RejectedItem] = []
+    for message in messages:
+        body = await services.mail.get_message_text(inbox, message.message_id)
+        for candidate in (await ctx.extract_candidates(body)).items:
+            if not headline_in_body(candidate.title, body):
+                rejected.append(_reject(candidate, source.id, "newsletter_mismatch"))
+                continue
+            resolved_url = candidate.url
+            if page := await services.crawl.scrape(candidate.url):
+                resolved_url = page.url or candidate.url
+            candidate = candidate.model_copy(update={"url": resolved_url})
+            findings, rejects = await _gate_candidate(
+                ctx, services, candidate, source, window_start, window_end, prior, themes, "sweep", "newsletter"
+            )
+            verified.extend(findings)
+            rejected.extend(rejects)
+
+    return (
+        verified,
+        rejected,
+        _log_outcome(
+            SourceOutcome(
+                source_id=source.id,
+                status="collected" if verified or rejected else "empty",
+                verified=len(verified),
+                rejected=len(rejected),
+            )
+        ),
+    )
+
+
+async def harvest_inbox_unattributed(
+    ctx: HarvestContext,
+    services: Services,
+    messages: list,
+    window_start: date,
+    window_end: date,
+    prior: list[FindingsFile],
+    themes: list[schemas.ThemeDef],
+) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
+    """Newsletter content from senders the catalog doesn't cover yet.
+
+    Real newsletter material with no catalog attribution; processed through
+    the full verification gate with ``source_id: "inbox"`` — the curate task
+    can propose adding recurring senders to the catalog.
+
+    :param ctx: The harvest context holding the LLM runners.
+    :param services: The wired service clients.
+    :param messages: Unattributed inbox messages.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param prior: Recent findings files, for duplicate detection.
+    :param themes: The watched themes.
+    :returns: ``(findings, rejected, outcome)`` for the inbox fallback.
+    """
+    verified: list[Finding] = []
+    rejected: list[RejectedItem] = []
+    for message in messages:
+        body = message.text or (await _fetch_body(services, message))
+        for candidate in (await ctx.extract_candidates(body)).items:
+            findings, rejects = await _gate_candidate(
+                ctx, services, candidate, None, window_start, window_end, prior, themes, "inbox", "newsletter"
+            )
+            verified.extend(findings)
+            rejected.extend(rejects)
+    return (
+        verified,
+        rejected,
+        _log_outcome(
+            SourceOutcome(
+                source_id="inbox",
+                status="collected" if verified or rejected else "empty",
+                verified=len(verified),
+                rejected=len(rejected),
+            )
+        ),
+    )
+
+
+async def harvest_board_tips(
+    ctx: HarvestContext,
+    services: Services,
+    messages: list,
+    window_start: date,
+    window_end: date,
+    prior: list[FindingsFile],
+    themes: list[schemas.ThemeDef],
+) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
+    """Board tips: messages addressed to the board-tip mailbox.
+
+    A tip is a lead, not a source in itself: the full verification gate
+    applies against its primary URL. Only messages whose recipients include
+    the board mailbox qualify — everything else in the inbox belongs to the
+    newsletter attribution, not here.
+
+    :param ctx: The harvest context holding the LLM runners.
+    :param services: The wired service clients.
+    :param messages: The board-tip-attributed inbox messages.
+    :param prior: Recent findings files, for duplicate detection.
+    :param themes: The watched themes.
+    :returns: ``(findings, rejected, outcome)`` for the board-tip channel.
+    """
+    if services.mail is None:
+        return [], [], SourceOutcome(source_id="board-tip", status="failed", detail="mail service not configured")
+    inbox = watch_settings.AGENTMAIL_INBOX_VISION_WATCH
+    if not inbox:
+        return [], [], SourceOutcome(source_id="board-tip", status="failed", detail="harvest inbox not configured")
+
+    verified: list[Finding] = []
+    rejected: list[RejectedItem] = []
+    for message in messages:
+        sender = message.from_
+        body = await services.mail.get_message_text(inbox, message.message_id)
+        links = extract_links(body)
+        if not links:
+            rejected.append(
+                RejectedItem(
+                    url="",
+                    claimed_title=message.subject,
+                    source_id="board-tip",
+                    reason="board_tip_unresolved",
+                    detail=f"from {sender}",
+                )
+            )
+            continue
+        page = await services.crawl.scrape(links[0])
+        candidates = (await ctx.extract_candidates(body)).items
+        candidate = (
+            candidates[0] if candidates else CandidateItem(title=message.subject, url=page.url if page else links[0])
+        )
+        candidate = candidate.model_copy(update={"url": page.url if page else links[0]})
+        findings, rejects = await _gate_candidate(
+            ctx, services, candidate, None, window_start, window_end, prior, themes, "board-tip", "board-tip"
+        )
+        if findings:
+            findings[0].source_id = "board-tip"
+            findings[0].summary = (findings[0].summary + f" [flagged by {sender}]").strip()
+            verified.extend(findings)
+        else:
+            rejected.extend(
+                rejects
+                or [
+                    RejectedItem(
+                        url=links[0],
+                        claimed_title=message.subject,
+                        source_id="board-tip",
+                        reason="board_tip_unresolved",
+                        detail=f"from {sender}",
+                    )
+                ]
+            )
+    return (
+        verified,
+        rejected,
+        _log_outcome(
+            SourceOutcome(
+                source_id="board-tip",
+                status="collected" if verified or rejected else "empty",
+                verified=len(verified),
+                rejected=len(rejected),
+            )
+        ),
+    )
+
+
+async def harvest_sweep(
+    ctx: HarvestContext,
+    services: Services,
+    themes: list[schemas.ThemeDef],
+    window_start: date,
+    window_end: date,
+    prior: list[FindingsFile],
+) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
+    """Run the general sweep: one web search per theme, gated as usual.
+
+    Catches developments from sources not yet in the catalog. Each search is
+    bounded to the harvest window by its query; hits that miss every theme
+    keyword are skipped as search noise, everything else goes through the
+    full verification gate with ``source_id: "sweep"``.
+
+    :param ctx: The harvest context holding the LLM runners.
+    :param services: The wired service clients.
+    :param themes: The watched themes, in config order (one search each).
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param prior: Recent findings files, for duplicate detection.
+    :returns: ``(findings, rejected, outcome)`` for the sweep.
+    """
+    if services.crawl is None:
+        return [], [], SourceOutcome(source_id="sweep", status="failed", detail="crawl service not configured")
+
+    keywords = [kw for theme in themes for kw in theme.keywords]
+    verified: list[Finding] = []
+    rejected: list[RejectedItem] = []
+
+    for theme in themes:
+        query = theme.sweep_query or ", ".join(theme.keywords[:6])
+        hits = await services.crawl.search(f"{query} past week", limit=5)
+
+        for hit in hits:
+            if hit.url in {f.url for f in verified} or keyword_hits(f"{hit.title} {hit.description}", keywords) == 0:
+                continue  # search noise, not a candidate
+
+            page = await services.crawl.scrape(hit.url)
+
+            if page is not None and page.markdown:
+                candidates = (await ctx.extract_candidates(page.markdown)).items
+            else:
+                candidates = [CandidateItem(title=hit.title, url=hit.url, summary=hit.description)]
+
+            for candidate in candidates:
+                candidate = candidate.model_copy(update={"url": candidate.url or hit.url})
+                findings, rejects = await _gate_candidate(
+                    ctx, services, candidate, None, window_start, window_end, prior, themes, "sweep", "sweep"
+                )
+                verified.extend(findings)
+                rejected.extend(rejects)
+    return (
+        verified,
+        rejected,
+        _log_outcome(
+            SourceOutcome(
+                source_id="sweep",
+                status="collected" if verified or rejected else "empty",
+                verified=len(verified),
+                rejected=len(rejected),
+            )
+        ),
+    )
+
+
+async def _fetch_body(services: Services, message) -> str:
+    """Fetch one message's text body through the mail service.
+
+    :param services: The wired service clients.
+    :param message: The message to fetch.
+    :returns: The message text; empty when the fetch fails.
+    """
+    inbox = watch_settings.AGENTMAIL_INBOX_VISION_WATCH
+    if services.mail is None or not inbox:
+        return ""
+    return await services.mail.get_message_text(inbox, message.message_id)
+
+
+def _log_outcome(outcome: SourceOutcome) -> SourceOutcome:
+    """Log one source's outcome as it completes, so runs are observable live.
+
+    :param outcome: The outcome to log.
+    :returns: The outcome unchanged.
+    """
+    logger.info("source %s: %s (%dv/%dr)", outcome.source_id, outcome.status, outcome.verified, outcome.rejected)
+    return outcome
+
+
+def attribute_messages(
+    messages: list,
+    newsletter_sources: list[schemas.SourceEntry],
+    board_mailbox: str,
+) -> tuple[dict[str, list], list, list[schemas.SourceEntry]]:
+    """Attribute inbox messages to newsletter sources, tips, or nothing.
+
+    A message is a **board tip** when its recipients include the board
+    mailbox (emails sent to the board's public address and redirected into
+    the harvest inbox). Otherwise it is attributed to the catalog newsletter
+    source whose declared senders match the message sender; messages that
+    match no newsletter source go to the ``inbox`` fallback bucket — real
+    newsletter content the catalog doesn't cover yet, i.e. curate candidates.
+
+    :param messages: The inbox messages for the harvest window.
+    :param newsletter_sources: The catalog's newsletter-flagged sources.
+    :param board_mailbox: The board-tip mailbox address (e.g.
+        ``tips@example.com``) matched against message recipients.
+    :returns: ``(attributed, tips, unmatched_sources)`` — attributed maps
+        source id to messages, ``tips`` is the board-tip message list, and
+        ``unmatched_sources`` are the newsletter sources with no messages.
+    """
+    attributed: dict[str, list] = {source.id: [] for source in newsletter_sources}
+    tips: list = []
+    unattributed: list = []
+    for message in messages:
+        recipients = [r.lower() for r in message.to]
+        if board_mailbox.lower() in recipients:
+            tips.append(message)
+            continue
+        matched = next(
+            (source for source in newsletter_sources if _sender_matches(message.from_, source.senders)),
+            None,
+        )
+        if matched is not None:
+            attributed[matched.id].append(message)
+        else:
+            unattributed.append(message)
+    return attributed, tips, unattributed
+
+
+def _sender_matches(message_from: str, senders: list[str]) -> bool:
+    """Check a message sender against a catalog source's declared senders.
+
+    Matched by substring in either direction, case-insensitive — a declared
+    ``substack.com`` matches ``weekly@substack.com`` and vice versa.
+
+    :param message_from: The message sender address.
+    :param senders: The source's declared sender addresses or domains.
+    :returns: ``True`` when the sender matches any declared value.
+    """
+    lowered_from = (message_from or "").lower()
+    return any(declared.lower() in lowered_from or lowered_from in declared.lower() for declared in senders if declared)
+
+
+def _window_start_dt(day: date) -> datetime:
+    """Convert a window-start day to a UTC datetime for inbox queries.
+
+    :param day: The window start.
+    :returns: Midnight UTC of that day.
+    """
+    return datetime.combine(day, time.min, tzinfo=UTC)
+
+
+def _window_end_dt(day: date) -> datetime:
+    """Convert a window-end day to an exclusive UTC datetime for inbox queries.
+
+    :param day: The window's closing Friday.
+    :returns: Midnight UTC of the following day (exclusive upper bound).
+    """
+    return datetime.combine(day + timedelta(days=1), time.min, tzinfo=UTC)

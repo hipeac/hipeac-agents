@@ -1,0 +1,38 @@
+"""Environment-driven configuration for the agent collection.
+
+Collection-wide settings only: service keys, the LLM provider, Sentry.
+Per-agent settings (data directory, mailboxes) live in each agent's own
+``settings.py`` — e.g. ``hipeac_agents.agents.vision_watch.settings``.
+
+Services are independently configurable and skippable:
+
+- ``crawl`` and ``mail`` use plain provider APIs via their official Python
+  SDKs (Firecrawl, AgentMail) — no MCP overhead. An unset API key means the
+  service is skipped.
+- ``vision`` is the one MCP-backed service (``hipeac-mcp`` only speaks MCP).
+  An unset URL means the service is skipped.
+
+Nodes depend on the service protocols in ``hipeac_agents.services``, never on
+providers directly, so a provider swap is a factory change only.
+"""
+
+import os
+
+
+FIRECRAWL_API_KEY = os.environ.get("FIRECRAWL_API_KEY") or None
+FIRECRAWL_API_URL = os.environ.get("FIRECRAWL_API_URL", "https://api.firecrawl.dev")
+
+AGENTMAIL_API_KEY = os.environ.get("AGENTMAIL_API_KEY") or None
+
+HIPEAC_MCP_URL = os.environ.get("HIPEAC_MCP_URL") or None
+
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
+LLM_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-5.6-luna")
+LLM_JUDGEMENT_MODEL = os.environ.get("OPENAI_JUDGEMENT_MODEL", "gpt-4o-mini")
+
+SENTRY_DSN = os.environ.get("SENTRY_DSN") or None
+
+# TODO(v1): Deep Research escalation for bot_protected sources is not wired
+# up — no provider configured for Deep Research yet, so those sources are
+# reported as blocked. The general sweep runs as a per-theme Firecrawl search
+# in the harvest's sweep channel.
