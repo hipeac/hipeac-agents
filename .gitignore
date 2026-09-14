@@ -22,3 +22,7 @@ __pycache__
 dev.db
 htmlcov
 test-reports
+
+# Agent data
+
+data
