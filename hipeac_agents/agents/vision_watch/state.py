@@ -59,6 +59,9 @@ class VisionWatchState(BaseModel):
 
     digest_markdown: str = ""
     digest_sent: bool = False
-    skip_send: bool = False
+
+    # Sending is opt-in (CLI ``--send``): the board list is the real audience,
+    # so a run that forgets the flag writes the digest and mails no one.
+    send: bool = False
 
     errors: list[str] = []

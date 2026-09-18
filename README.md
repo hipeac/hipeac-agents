@@ -44,7 +44,7 @@ Useful flags:
 | Flag              | Effect                                                |
 | ----------------- | ----------------------------------------------------- |
 | `--on 2026-09-11` | Run as if it were this date (backfilling a past week) |
-| `--skip-send`     | Compose and write the digest, but send no email       |
+| `--send`          | Email the composed digest to the board list (opt-in)  |
 | `--limit N`       | Check at most N sources — cheap partial harvests      |
 | `--only id1,id2`  | Check only these source ids                           |
 | `--skip-sweep`    | Drop the general per-theme search sweep               |

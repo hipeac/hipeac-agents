@@ -587,7 +587,7 @@ class TestDigestNode:
         mail = FakeMail()
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        state = VisionWatchState.model_construct(week="2026-W24")
+        state = VisionWatchState.model_construct(week="2026-W24", send=True)
 
         updates = await digest_node_mod.digest_node(
             state, services=Services(crawl=None, mail=mail, vision=None), llm=llm
@@ -620,7 +620,7 @@ class TestDigestNode:
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
         await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24"),
+            VisionWatchState.model_construct(week="2026-W24", send=True),
             services=Services(crawl=None, mail=mail, vision=None),
             llm=llm,
         )
@@ -649,7 +649,9 @@ class TestDigestNode:
         assert updates["digest_sent"] is False
         assert "## In brief" in updates["digest_markdown"]
 
-    async def test_skip_send_flag_blocks_email(self, llm, monkeypatch):
+    async def test_sending_is_opt_in(self, llm, monkeypatch):
+        """Sending is opt-in: a fully configured run that omits ``send`` writes
+        the digest and mails no one. The board list is the real audience."""
         monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
         monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
@@ -658,7 +660,7 @@ class TestDigestNode:
             {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
         )
         mail = FakeMail()
-        state = VisionWatchState.model_construct(week="2026-W24", skip_send=True)
+        state = VisionWatchState.model_construct(week="2026-W24")
 
         updates = await digest_node_mod.digest_node(
             state, services=Services(crawl=None, mail=mail, vision=None), llm=llm
@@ -680,7 +682,7 @@ class TestDigestNode:
         llm.calls.clear()
 
         updates = await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24"),
+            VisionWatchState.model_construct(week="2026-W24", send=True),
             services=Services(crawl=None, mail=mail, vision=None),
             llm=llm,
         )

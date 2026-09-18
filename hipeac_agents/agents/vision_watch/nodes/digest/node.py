@@ -329,7 +329,7 @@ async def digest_node(
     lead_name = lead[1]["cluster"].name if lead is not None else "Quiet week"
     subject = f"HiPEAC Vision Watch — Week {week}: {lead_name}"
 
-    if services.mail is not None and inbox and recipient and not state.skip_send:
+    if services.mail is not None and inbox and recipient and state.send:
         await services.mail.send(
             inbox,
             recipient,

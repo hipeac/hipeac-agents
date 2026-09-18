@@ -355,7 +355,7 @@ async def monthly_node(
     recipient = watch_settings.HIPEAC_VISION_BOARD_EMAIL
     inbox = watch_settings.AGENTMAIL_INBOX_VISION_WATCH
 
-    if services.mail is not None and inbox and recipient and not state.skip_send:
+    if services.mail is not None and inbox and recipient and state.send:
         await services.mail.send(
             inbox,
             recipient,

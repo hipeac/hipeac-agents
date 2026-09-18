@@ -3,8 +3,12 @@
 Usage::
 
     ./run python -m hipeac_agents weekly-harvest
-    ./run python -m hipeac_agents weekly-digest
+    ./run python -m hipeac_agents weekly-digest [--send]
+    ./run python -m hipeac_agents monthly-digest --month 2026-07 [--send]
     ./run python -m hipeac_agents simulate-harvest --on 2026-06-26 [--limit 4] [--skip-sweep]
+
+Sending is opt-in: without ``--send`` a digest run composes and writes the
+digest, and mails no one.
 """
 
 import argparse
@@ -54,7 +58,7 @@ def _initial_state(
     source_limit: int | None = None,
     source_only: list[str] | None = None,
     skip_sweep: bool = False,
-    skip_send: bool = False,
+    send: bool = False,
     month: str | None = None,
 ) -> VisionWatchState:
     """Build the initial graph state for a run.
@@ -64,7 +68,7 @@ def _initial_state(
     :param source_limit: Cap on the number of due sources checked.
     :param source_only: Only check these source ids.
     :param skip_sweep: Drop the general sweep (cheap partial runs).
-    :param skip_send: Compose the digest but skip the email send.
+    :param send: Send the composed digest by email (opt-in).
     :returns: The initial state.
     """
     window_start, window_end = cadence.current_window(today or date.today())
@@ -75,7 +79,7 @@ def _initial_state(
         source_limit=source_limit,
         source_only=source_only or [],
         skip_sweep=skip_sweep,
-        skip_send=skip_send,
+        send=send,
         month=month,
     )
 
@@ -104,7 +108,7 @@ async def _run(
     source_limit: int | None = None,
     source_only: list[str] | None = None,
     skip_sweep: bool = False,
-    skip_send: bool = False,
+    send: bool = False,
     month: str | None = None,
 ) -> int:
     """Run one graph invocation against the configured workspace.
@@ -119,7 +123,7 @@ async def _run(
     :param source_limit: Cap on the number of due sources checked.
     :param source_only: Only check these source ids.
     :param skip_sweep: Drop the general sweep (cheap partial runs).
-    :param skip_send: Compose the digest but skip the email send.
+    :param send: Send the composed digest by email (opt-in).
     :returns: The exit code.
     """
     if data_dir:
@@ -172,7 +176,7 @@ async def _run(
             source_limit=source_limit,
             source_only=source_only or [],
             skip_sweep=skip_sweep,
-            skip_send=skip_send,
+            send=send,
             month=month,
         )
     )
@@ -203,7 +207,11 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, help="harvest: check at most N due sources (cheap partial runs)")
     parser.add_argument("--only", help="harvest: comma-separated source ids to check")
     parser.add_argument("--skip-sweep", action="store_true", help="harvest: drop the general sweep")
-    parser.add_argument("--skip-send", action="store_true", help="digest: compose and write, but skip the email send")
+    parser.add_argument(
+        "--send",
+        action="store_true",
+        help="digest: email the composed digest to the board list (default: compose and write only)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -221,7 +229,7 @@ async def main(argv: list[str] | None = None) -> int:
             DIGEST_NODES,
             today=date.fromisoformat(args.on) if args.on else None,
             data_dir=args.data_dir,
-            skip_send=args.skip_send,
+            send=args.send,
         )
 
     if args.command == "monthly-digest":
@@ -231,7 +239,7 @@ async def main(argv: list[str] | None = None) -> int:
         return await _run(
             ["monthly"],
             data_dir=args.data_dir,
-            skip_send=args.skip_send,
+            send=args.send,
             month=args.month,
         )
 
