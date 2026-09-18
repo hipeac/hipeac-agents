@@ -6,7 +6,7 @@ default provider uses the official Firecrawl Python SDK over its plain API.
 """
 
 import asyncio
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from hipeac_agents import settings
 from hipeac_agents.services.types import ScrapeResult, SearchHit
@@ -14,8 +14,14 @@ from hipeac_agents.services.urls import normalize_url
 from hipeac_agents.storage import cache as json_cache
 
 
+@runtime_checkable
 class CrawlClient(Protocol):
-    """What nodes may do against the open web: scrape one URL, search the web."""
+    """What nodes may do against the open web: scrape one URL, search the web.
+
+    Runtime-checkable so a provider class can be asserted against it in tests:
+    a missing method here is an ``AttributeError`` at harvest time, swallowed
+    by the per-source error handling into a nondescript failed outcome.
+    """
 
     async def scrape(self, url: str, fresh: bool = False) -> ScrapeResult | None:
         """Fetch a single URL and return its markdown content.
@@ -61,6 +67,32 @@ def _page_published_at(document: Any) -> str | None:
 def _status_code(document: Any) -> int | None:
     metadata = getattr(document, "metadata", None)
     return getattr(metadata, "statusCode", None) if metadata else None
+
+
+async def fetch_feed_direct(url: str) -> str | None:
+    """Fetch a raw RSS/Atom document over plain HTTP.
+
+    Feeds are deterministic XML — no browser rendering needed, so they never
+    go through Firecrawl. A plain GET with a browser-ish User-Agent suffices;
+    failures return ``None`` and the caller falls back to page scraping.
+
+    Provider-independent by nature, so every crawl client shares this one
+    implementation rather than declaring its own.
+
+    :param url: The feed URL.
+    :returns: The raw XML text, or ``None`` when the fetch fails.
+    """
+    import urllib.request
+
+    def _get() -> str | None:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "hipeac-vision-watch/0.1"})  # noqa: S310 — feed URLs come from operator config
+            with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 — feed URLs come from operator config
+                return response.read().decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    return await asyncio.to_thread(_get)
 
 
 class FirecrawlCrawl:
@@ -135,6 +167,14 @@ class FirecrawlCrawl:
 
         return hits[:limit]
 
+    async def fetch_feed(self, url: str) -> str | None:
+        """Fetch a raw RSS/Atom document; a plain GET, not a Firecrawl call.
+
+        :param url: The feed URL.
+        :returns: The raw XML text, or ``None`` when the fetch fails.
+        """
+        return await fetch_feed_direct(url)
+
 
 class CachedCrawl:
     """Crawl wrapper that caches scrape results on the local filesystem.
@@ -182,33 +222,17 @@ class CachedCrawl:
         """
         return await self._client.search(query, limit=limit)
 
-
-class DirectFeedFetch:
-    """Feed fetcher: plain HTTP GET for RSS/Atom documents.
-
-    Feeds are deterministic XML — no browser rendering needed, so they never
-    go through Firecrawl. A plain GET with a browser-ish User-Agent suffices;
-    failures return ``None`` and the caller falls back to page scraping.
-    """
-
     async def fetch_feed(self, url: str) -> str | None:
-        """Fetch a raw RSS/Atom document.
+        """Fetch a feed; pass-through to the wrapped client, never cached.
+
+        The cache exists to avoid paying twice for the same page. A feed is
+        free to fetch and its whole point is what changed since last time, so
+        a cached copy would serve last week's entries to this week's window.
 
         :param url: The feed URL.
         :returns: The raw XML text, or ``None`` when the fetch fails.
         """
-        import urllib.error
-        import urllib.request
-
-        def _get() -> str | None:
-            try:
-                request = urllib.request.Request(url, headers={"User-Agent": "hipeac-vision-watch/0.1"})  # noqa: S310 — feed URLs come from operator config
-                with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 — feed URLs come from operator config
-                    return response.read().decode("utf-8", errors="replace")
-            except Exception:
-                return None
-
-        return await asyncio.to_thread(_get)
+        return await self._client.fetch_feed(url)
 
 
 def load_crawl_client() -> CrawlClient | None:
