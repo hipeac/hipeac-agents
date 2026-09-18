@@ -39,6 +39,23 @@ from hipeac_agents.storage import WorkspaceError, write_once
 _WEEK_LABEL = re.compile(r"\d{4}-W\d{2}")
 
 
+class ClusterExistsError(WorkspaceError):
+    """Raised when a cluster id is already present in its theme's log.
+
+    Its own type, not a message: a re-run of the same week hits this as a
+    matter of course and recovers by appending to the existing cluster, so
+    callers must be able to tell it apart from a real append-only violation.
+    """
+
+
+class EntryAlreadyRecordedError(WorkspaceError):
+    """Raised when a finding is already recorded in the cluster it targets.
+
+    Matched on the finding id or on its URL — either way the entry is already
+    in the log, which makes re-running a week a no-op rather than an error.
+    """
+
+
 # --------------------------------------------------------------------------- #
 # Paths and naming
 # --------------------------------------------------------------------------- #
@@ -379,13 +396,13 @@ def append_cluster(cluster: schemas.Cluster, theme: str, created: date, data_dir
     :param theme: The theme id the cluster belongs to.
     :param created: Creation date recorded on a brand-new log.
     :param data_dir: Optional workspace-root override.
-    :raises WorkspaceError: If the cluster id already exists in the log.
+    :raises ClusterExistsError: If the cluster id already exists in the log.
     """
     path = clusters_dir(data_dir) / cluster_filename(theme)
     if path.exists():
         log = _read_cluster_log(theme, data_dir)
         if any(existing.id == cluster.id for existing in log.clusters):
-            raise WorkspaceError(f"cluster '{cluster.id}' already exists in theme '{theme}'")
+            raise ClusterExistsError(f"cluster '{cluster.id}' already exists in theme '{theme}'")
         log.clusters.append(cluster)
         path.write_text(log.model_dump_json(indent=2), encoding="utf-8")
         return
@@ -401,8 +418,9 @@ def append_cluster_entry(theme: str, cluster_id: str, entry: schemas.ClusterEntr
     :param cluster_id: The cluster the entry extends.
     :param entry: The entry to append.
     :param data_dir: Optional workspace-root override.
-    :raises WorkspaceError: If the log or cluster does not exist, or the
-        finding is already recorded in it.
+    :raises WorkspaceError: If the log or cluster does not exist.
+    :raises EntryAlreadyRecordedError: If the finding is already recorded in
+        the cluster, by id or by URL.
     """
     log = _read_cluster_log(theme, data_dir)
     cluster = next((c for c in log.clusters if c.id == cluster_id), None)
@@ -411,9 +429,9 @@ def append_cluster_entry(theme: str, cluster_id: str, entry: schemas.ClusterEntr
         raise WorkspaceError(f"cluster '{cluster_id}' does not exist in theme '{theme}'")
 
     if any(existing.finding_id == entry.finding_id for existing in cluster.entries):
-        raise WorkspaceError(f"finding '{entry.finding_id}' already in cluster '{cluster_id}'")
+        raise EntryAlreadyRecordedError(f"finding '{entry.finding_id}' already in cluster '{cluster_id}'")
     if any(existing.url == entry.url for existing in cluster.entries):
-        raise WorkspaceError(f"url '{entry.url}' already in cluster '{cluster_id}'")
+        raise EntryAlreadyRecordedError(f"url '{entry.url}' already in cluster '{cluster_id}'")
 
     cluster.entries.append(entry)
     (clusters_dir(data_dir) / cluster_filename(theme)).write_text(log.model_dump_json(indent=2), encoding="utf-8")
@@ -436,6 +454,17 @@ def write_weekly_digest(week: str, markdown: str, data_dir: str | None = None) -
     return write_once(weekly_digest_dir(data_dir) / digest_filename(week), markdown)
 
 
+def read_weekly_digest(week: str, data_dir: str | None = None) -> str | None:
+    """Read one week's pulse digest, if it was already composed.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The digest markdown, or ``None`` when the week has no digest.
+    """
+    path = weekly_digest_dir(data_dir) / digest_filename(week)
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
 def read_latest_weekly_digest(data_dir: str | None = None) -> str | None:
     """Read the most recent weekly digest, for "last digest" context.
 
@@ -456,6 +485,17 @@ def write_monthly_digest(month: str, markdown: str, data_dir: str | None = None)
     :raises WorkspaceError: If the digest already exists.
     """
     return write_once(monthly_digest_dir(data_dir) / monthly_digest_filename(month), markdown)
+
+
+def read_monthly_digest(month: str, data_dir: str | None = None) -> str | None:
+    """Read one month's synthesis digest, if it was already composed.
+
+    :param month: A calendar month as ``"2026-07"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The digest markdown, or ``None`` when the month has no digest.
+    """
+    path = monthly_digest_dir(data_dir) / monthly_digest_filename(month)
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
 
 # --------------------------------------------------------------------------- #
@@ -520,6 +560,8 @@ def read_source_catalog(data_dir: str | None = None) -> schemas.SourceCatalog:
 
 
 __all__ = [
+    "ClusterExistsError",
+    "EntryAlreadyRecordedError",
     "WorkspaceError",
     "append_cluster",
     "append_cluster_entry",
@@ -540,8 +582,10 @@ __all__ = [
     "read_grouping_plan",
     "read_findings_file",
     "read_latest_weekly_digest",
+    "read_monthly_digest",
     "read_recent_findings",
     "read_rejected_file",
+    "read_weekly_digest",
     "read_source_catalog",
     "read_themes",
     "rejected_path",

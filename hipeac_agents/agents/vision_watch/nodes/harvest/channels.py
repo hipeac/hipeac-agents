@@ -656,13 +656,20 @@ def _sender_matches(message_from: str, senders: list[str]) -> bool:
     """Check a message sender against a catalog source's declared senders.
 
     Matched by substring in either direction, case-insensitive — a declared
-    ``substack.com`` matches ``weekly@substack.com`` and vice versa.
+    ``substack.com`` matches ``weekly@substack.com`` and vice versa. A message
+    with no parsed sender matches nothing: the empty string is a substring of
+    every declared value, so it would otherwise be attributed to whichever
+    source happens to come first.
 
     :param message_from: The message sender address.
     :param senders: The source's declared sender addresses or domains.
     :returns: ``True`` when the sender matches any declared value.
     """
-    lowered_from = (message_from or "").lower()
+    lowered_from = (message_from or "").strip().lower()
+
+    if not lowered_from:
+        return False
+
     return any(declared.lower() in lowered_from or lowered_from in declared.lower() for declared in senders if declared)
 
 

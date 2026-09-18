@@ -47,6 +47,20 @@ async def harvest_node(
     :param llm: The chat model used for the flagged judgement calls.
     :returns: State updates: findings, rejected items, source outcomes.
     """
+    # Preflight: the evidence files are write-once, so a week already
+    # harvested would scrape and judge everything again only to raise on the
+    # final write. Replay the recorded evidence instead, for free.
+    if recorded := workspace.read_findings_file(state.week):
+        logger.info("week %s already harvested; replaying recorded evidence", state.week)
+        rejected_file = workspace.read_rejected_file(state.week)
+        return {
+            "findings": recorded.findings,
+            "rejected": rejected_file.rejected if rejected_file else [],
+            "source_outcomes": [
+                SourceOutcome(source_id="harvest", status="skipped", detail=f"{state.week} already harvested")
+            ],
+        }
+
     ctx = HarvestContext(llm)
     window_start = state.window_start or date.today()
     window_end = state.window_end or window_start
@@ -150,7 +164,7 @@ async def harvest_node(
     merged = _merge_url_duplicates(verified)
     numbered = _assign_ids(state.week, merged)
     numbered, folded_rejects = await _fold_near_matches(ctx, numbered)
-    await _resample(services.crawl, numbered, rejected)
+    numbered = await _resample(services.crawl, numbered, rejected)
 
     findings_file = FindingsFile(week=state.week, created=date.today(), findings=numbered)
     rejected_file = RejectedFile(
@@ -180,6 +194,15 @@ def _assign_ids(week: str, findings: list[Finding]) -> list[Finding]:
     ]
 
 
+def _join_corroboration(*parts: str | None) -> str | None:
+    """Join corroboration fragments, dropping the empty ones.
+
+    :param parts: The fragments to join, in order.
+    :returns: The joined corroboration, or ``None`` when nothing was given.
+    """
+    return "; ".join(filter(None, parts)) or None
+
+
 def _merge_url_duplicates(findings: list[Finding]) -> list[Finding]:
     """Fold findings that share a URL — one development, one finding.
 
@@ -193,26 +216,37 @@ def _merge_url_duplicates(findings: list[Finding]) -> list[Finding]:
     by_url: dict[str, Finding] = {}
     order: list[str] = []
     folded: dict[str, list[str]] = {}
+
     for finding in findings:
         primary = by_url.get(finding.url)
+
         if primary is None:
             by_url[finding.url] = finding
             order.append(finding.url)
             continue
+
         if (finding.tier, finding.datapoint) < (primary.tier, primary.datapoint):
             folded.setdefault(finding.url, []).append(primary.summary)
-            by_url[finding.url] = finding.model_copy(update={"corroboration": primary.corroboration})
+            # The displaced primary's corroboration is evidence too: keep the
+            # winner's own and inherit the primary's, rather than overwriting.
+            by_url[finding.url] = finding.model_copy(
+                update={"corroboration": _join_corroboration(finding.corroboration, primary.corroboration)}
+            )
             continue
+
         folded.setdefault(finding.url, []).append(finding.summary)
+
     merged = []
+
     for url in order:
         finding = by_url[url]
         extras = folded.get(url)
+
         if extras:
-            finding = finding.model_copy(
-                update={"corroboration": "; ".join(filter(None, [finding.corroboration, *extras]))}
-            )
+            finding = finding.model_copy(update={"corroboration": _join_corroboration(finding.corroboration, *extras)})
+
         merged.append(finding)
+
     return merged
 
 
@@ -241,7 +275,7 @@ async def _fold_near_matches(ctx: HarvestContext, findings: list[Finding]) -> tu
             continue
         members.sort(key=lambda f: f.tier)
         primary = members[0]
-        primary.corroboration = "; ".join(filter(None, [primary.corroboration, *(m.summary for m in members[1:])]))
+        primary.corroboration = _join_corroboration(primary.corroboration, *(m.summary for m in members[1:]))
         drop.update(m.id for m in members[1:])
 
     folded = [
@@ -258,15 +292,21 @@ async def _fold_near_matches(ctx: HarvestContext, findings: list[Finding]) -> tu
     return kept_findings(findings, drop), folded
 
 
-async def _resample(crawl: Any, findings: list[Finding], rejected: list[RejectedItem]) -> None:
+async def _resample(crawl: Any, findings: list[Finding], rejected: list[RejectedItem]) -> list[Finding]:
     """Re-sample ~20% of findings with a fresh fetch; move failures to rejected.
+
+    A finding whose URL no longer resolves is *moved*, not copied: it is
+    appended to the rejected audit and dropped from the findings, so the two
+    write-once files never disagree about it.
 
     :param crawl: The crawl client.
     :param findings: The verified findings.
     :param rejected: The rejected list to append failures to.
+    :returns: The findings minus the ones that failed re-sampling.
     """
     sample = pick_resample(findings)
     failures = await asyncio.gather(*(crawl.scrape(f.url, fresh=True) for f in sample))
+    drop: set[str] = set()
 
     for finding, result in zip(sample, failures, strict=True):
         if result is None:
@@ -275,3 +315,6 @@ async def _resample(crawl: Any, findings: list[Finding], rejected: list[Rejected
                     url=finding.url, claimed_title=finding.title, source_id=finding.source_id, reason="url_404"
                 )
             )
+            drop.add(finding.id)
+
+    return kept_findings(findings, drop)

@@ -6,8 +6,8 @@ from typing import Any
 from hipeac_agents.agents.vision_watch import schemas, workspace
 from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterLog, Finding, SourceClass
 from hipeac_agents.agents.vision_watch.state import ClusterReport, VisionWatchState
+from hipeac_agents.agents.vision_watch.workspace import ClusterExistsError, EntryAlreadyRecordedError
 from hipeac_agents.services.factory import Services
-from hipeac_agents.storage import WorkspaceError
 
 from .models import GroupingPlan
 from .prompts import GROUPING_BAR
@@ -160,10 +160,8 @@ async def cluster_node(
             try:
                 workspace.append_cluster_entry(theme_name, assignment.extends_cluster_id, entry)
                 extended_by_theme[theme_name] += 1
-            except WorkspaceError as exc:
-                # Re-run of the same week: the finding is already recorded.
-                if "already in cluster" not in str(exc):
-                    raise
+            except EntryAlreadyRecordedError:
+                pass  # Re-run of the same week: the finding is already recorded.
         elif assignment.new_cluster:
             cluster = Cluster(
                 id=assignment.new_cluster.id,
@@ -176,17 +174,13 @@ async def cluster_node(
                 workspace.append_cluster(cluster, theme_name, log.created)
                 opened_by_theme[theme_name] += 1
                 cluster_index[cluster.id] = (theme_name, cluster)
-            except WorkspaceError as exc:
+            except ClusterExistsError:
                 # Re-run: the cluster already exists; append the entry instead.
-                if "already exists" in str(exc):
-                    try:
-                        workspace.append_cluster_entry(theme_name, assignment.new_cluster.id, entry)
-                        extended_by_theme[theme_name] += 1
-                    except WorkspaceError as exc2:
-                        if "already in cluster" not in str(exc2):
-                            raise
-                else:
-                    raise
+                try:
+                    workspace.append_cluster_entry(theme_name, assignment.new_cluster.id, entry)
+                    extended_by_theme[theme_name] += 1
+                except EntryAlreadyRecordedError:
+                    pass  # Re-run of the same week: the finding is already recorded.
 
     # Per-theme reports from the refreshed logs.
     for theme in themes:

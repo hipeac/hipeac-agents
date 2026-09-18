@@ -156,7 +156,9 @@ class TestClusterLog:
     def test_append_existing_cluster_raises(self, data_dir, cluster, entry):
         workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
 
-        with pytest.raises(WorkspaceError, match="already exists"):
+        # Its own type: the cluster node recovers from this one and re-raises
+        # every other append-only violation.
+        with pytest.raises(workspace.ClusterExistsError, match="already exists"):
             workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
 
     def test_append_entry_to_existing_cluster(self, data_dir, cluster, entry, week):
@@ -181,14 +183,26 @@ class TestClusterLog:
             data_dir=data_dir,
         )
 
+        # A missing cluster is a real error, not a re-run: it stays a plain
+        # WorkspaceError so the cluster node lets it through.
         with pytest.raises(WorkspaceError, match="does not exist"):
             workspace.append_cluster_entry("physical-ai", "humanoid-deployment", entry, data_dir)
+        assert not isinstance(WorkspaceError("x"), workspace.EntryAlreadyRecordedError)
 
     def test_append_duplicate_finding_raises(self, data_dir, cluster, entry):
         workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
 
-        with pytest.raises(WorkspaceError, match="already"):
+        with pytest.raises(workspace.EntryAlreadyRecordedError, match="f-2026-W24-01"):
             workspace.append_cluster_entry("physical-ai", "humanoid-deployment", entry, data_dir)
+
+    def test_append_duplicate_url_raises_the_same_type(self, data_dir, cluster, entry):
+        """A finding re-entering under a new id but the same URL is still a
+        re-run, so it must be the recoverable type too."""
+        workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
+        same_url = entry.model_copy(update={"finding_id": "f-2026-W25-09", "week": "2026-W25"})
+
+        with pytest.raises(workspace.EntryAlreadyRecordedError, match="url"):
+            workspace.append_cluster_entry("physical-ai", "humanoid-deployment", same_url, data_dir)
 
     def test_entry_never_edited_or_removed(self, data_dir, cluster, entry):
         workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)

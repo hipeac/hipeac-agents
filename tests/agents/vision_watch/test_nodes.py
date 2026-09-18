@@ -96,6 +96,46 @@ class TestHarvestNode:
         assert updates["source_outcomes"][0].status == "collected"
         assert (workspace.week_dir("2026-W24") / "findings.json").exists()
 
+    async def test_already_harvested_week_replays_instead_of_re_collecting(self, data_dir, llm, weekly_catalog):
+        """Regression: the evidence files are write-once, so re-running a week
+        used to scrape and judge everything again only to raise on the write."""
+        from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, RejectedFile, RejectedItem
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        recorded = Finding.model_validate(
+            {
+                "id": "f-2026-W24-01",
+                "date": "2026-06-09",
+                "title": "Recorded",
+                "url": "https://example.com/item",
+                "source_id": "robot-report",
+                "region": "global",
+                "tier": 2,
+                "theme_ids": ["physical-ai"],
+                "summary": "Already on disk.",
+            }
+        )
+        workspace.write_findings_file(FindingsFile(week="2026-W24", created=date(2026, 6, 12), findings=[recorded]))
+        workspace.write_rejected_file(
+            RejectedFile(
+                week="2026-W24",
+                created=date(2026, 6, 12),
+                rejected=[
+                    RejectedItem(url="https://example.com/no", claimed_title="No", source_id="s", reason="off_theme")
+                ],
+            )
+        )
+        crawl = FakeCrawl()
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+
+        updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
+
+        assert [f.id for f in updates["findings"]] == ["f-2026-W24-01"]
+        assert [r.url for r in updates["rejected"]] == ["https://example.com/no"]
+        assert updates["source_outcomes"][0].status == "skipped"
+        assert not llm.calls, "a recorded week must cost no LLM calls"
+        assert not crawl.scrape_calls, "a recorded week must cost no scrapes"
+
     async def test_unverifiable_url_rejected(self, data_dir, llm, weekly_catalog):
         llm.handlers[CandidateList] = make_candidate_handler(
             [
@@ -318,6 +358,91 @@ class TestClusterNode:
         assert log is not None and len(log.clusters) == 1
         assert log.clusters[0].id == "humanoid-deployment"
         assert log.clusters[0].entries[0].finding_id == "f-2026-W24-01"
+
+    async def test_rerunning_the_same_week_is_a_no_op(self, llm, finding):
+        """Re-running a week must recover from 'cluster exists' and 'entry
+        already recorded' — and from nothing else. Recovery keys off exception
+        type now, not off the wording of the error message."""
+        finding = {
+            "id": "f-2026-W24-01",
+            "date": "2026-06-09",
+            "title": "Humanoid deployed",
+            "url": "https://example.com/a",
+            "source_id": "robot-report",
+            "region": "global",
+            "tier": 2,
+            "theme_ids": ["physical-ai"],
+            "summary": "Deployment announced.",
+        }
+        llm.handlers[GroupingPlan] = make_grouping_handler(
+            [
+                {
+                    "finding_id": "f-2026-W24-01",
+                    "new_cluster": {
+                        "id": "humanoid-deployment",
+                        "name": "Humanoids in industry",
+                        "theme": "physical-ai",
+                    },
+                    "note": "First entry.",
+                }
+            ]
+        )
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        self._write_findings(finding)
+        state = VisionWatchState(week="2026-W24")
+        services = Services(crawl=None, mail=None, vision=None)
+
+        await cluster_node_mod.cluster_node(state, services=services, llm=llm)
+        await cluster_node_mod.cluster_node(state, services=services, llm=llm)
+
+        log = workspace.read_cluster_log("physical-ai")
+        assert len(log.clusters) == 1
+        assert [e.finding_id for e in log.clusters[0].entries] == ["f-2026-W24-01"]
+
+    async def test_unexpected_workspace_error_is_not_swallowed(self, llm, finding, monkeypatch):
+        """A real append-only violation must surface, not be mistaken for a
+        re-run: only the two recoverable types are caught."""
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+        from hipeac_agents.storage import WorkspaceError
+
+        finding = {
+            "id": "f-2026-W24-01",
+            "date": "2026-06-09",
+            "title": "Humanoid deployed",
+            "url": "https://example.com/a",
+            "source_id": "robot-report",
+            "region": "global",
+            "tier": 2,
+            "theme_ids": ["physical-ai"],
+            "summary": "Deployment announced.",
+        }
+        llm.handlers[GroupingPlan] = make_grouping_handler(
+            [
+                {
+                    "finding_id": "f-2026-W24-01",
+                    "new_cluster": {
+                        "id": "humanoid-deployment",
+                        "name": "Humanoids in industry",
+                        "theme": "physical-ai",
+                    },
+                    "note": "First entry.",
+                }
+            ]
+        )
+
+        def boom(*args, **kwargs):
+            raise WorkspaceError("disk is on fire")
+
+        monkeypatch.setattr(workspace, "append_cluster", boom)
+        self._write_findings(finding)
+
+        with pytest.raises(WorkspaceError, match="disk is on fire"):
+            await cluster_node_mod.cluster_node(
+                VisionWatchState(week="2026-W24"),
+                services=Services(crawl=None, mail=None, vision=None),
+                llm=llm,
+            )
 
     async def test_reads_findings_file_not_state(self, llm, finding):
         """Regression: a digest run carries no findings in state; the cluster
@@ -542,6 +667,28 @@ class TestDigestNode:
         assert updates["digest_sent"] is False
         assert not mail.sent
         assert (workspace.weekly_digest_dir() / "digest-2026-W24.md").exists()
+
+    async def test_already_composed_week_is_not_recomposed_or_resent(self, llm, monkeypatch):
+        """Regression: the digest is write-once, so a re-run used to pay for
+        every prose call and then raise on the write. It now replays."""
+        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
+        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        workspace.write_weekly_digest("2026-W24", "# Already composed\n")
+        mail = FakeMail()
+        llm.calls.clear()
+
+        updates = await digest_node_mod.digest_node(
+            VisionWatchState.model_construct(week="2026-W24"),
+            services=Services(crawl=None, mail=mail, vision=None),
+            llm=llm,
+        )
+
+        assert updates["digest_markdown"] == "# Already composed\n"
+        assert updates["digest_sent"] is False
+        assert not mail.sent
+        assert not llm.calls, "a recorded week must cost no LLM calls"
 
     async def test_lead_prefers_this_weeks_tier_over_lifetime_volume(self, llm):
         """Regression: the lead used to be picked by lifetime entry count, so a
@@ -898,6 +1045,37 @@ class TestMessageAttribution:
         assert [m.message_id for m in unattributed] == ["m2"]
         assert not tips
 
+    def test_message_without_a_sender_matches_nothing(self):
+        """Regression: matching is bidirectional substring, so an empty sender
+        was ``in`` every declared value and got attributed to the first source."""
+        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import _sender_matches, attribute_messages
+        from hipeac_agents.agents.vision_watch.schemas import SourceEntry
+        from hipeac_agents.services.types import MailMessage
+
+        assert _sender_matches("", ["weekly@substack.com"]) is False
+        assert _sender_matches("   ", ["weekly@substack.com"]) is False
+        assert _sender_matches("weekly@substack.com", ["substack.com"]) is True
+
+        source = SourceEntry.model_validate(
+            {
+                "id": "n1",
+                "name": "Newsletter",
+                "url": "https://example.com",
+                "class": "aggregators",
+                "region": "global",
+                "tier": 2,
+                "independence": "high",
+                "stream": "evidence",
+                "senders": ["weekly@substack.com"],
+            }
+        )
+        anonymous = MailMessage(inbox_id="in", message_id="m1", from_="", to=["in@agentmail.to"])
+
+        attributed, _, unattributed = attribute_messages([anonymous], [source], "news@example.com")
+
+        assert attributed["n1"] == []
+        assert [m.message_id for m in unattributed] == ["m1"]
+
 
 class TestUrlDedupe:
     def test_same_url_folds_into_best_tier(self):
@@ -955,6 +1133,106 @@ class TestUrlDedupe:
         merged = harvest_node_mod._merge_url_duplicates(findings)
 
         assert len(merged) == 2
+
+    def test_winner_keeps_its_own_corroboration(self):
+        """Regression: a finding that displaced the primary had its own
+        corroboration overwritten with the primary's instead of joined."""
+        from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node_mod
+        from hipeac_agents.agents.vision_watch.schemas import Finding
+
+        def finding(fid: str, tier: int, summary: str, corroboration: str) -> Finding:
+            return Finding.model_validate(
+                {
+                    "id": fid,
+                    "date": "2026-06-09",
+                    "title": "Same story",
+                    "url": "https://example.com/story",
+                    "source_id": "s",
+                    "region": "global",
+                    "tier": tier,
+                    "theme_ids": ["physical-ai"],
+                    "summary": summary,
+                    "corroboration": corroboration,
+                }
+            )
+
+        findings = [
+            finding("a", 3, "aggregator version", "seen at aggregator"),
+            finding("b", 2, "first-party version", "confirmed by vendor"),
+        ]
+
+        merged = harvest_node_mod._merge_url_duplicates(findings)
+
+        assert len(merged) == 1
+        assert merged[0].summary == "first-party version"
+        # Both the winner's own corroboration and the displaced primary's survive.
+        assert "confirmed by vendor" in merged[0].corroboration
+        assert "seen at aggregator" in merged[0].corroboration
+        assert "aggregator version" in merged[0].corroboration
+
+
+class TestResample:
+    async def test_dead_url_is_moved_out_of_findings_not_copied(self):
+        """Regression: a finding that failed re-sampling was appended to the
+        rejected audit but left in the findings — both files are write-once,
+        so the contradiction was permanent."""
+        from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node_mod
+        from hipeac_agents.agents.vision_watch.schemas import Finding
+
+        def finding(fid: str, url: str) -> Finding:
+            return Finding.model_validate(
+                {
+                    "id": fid,
+                    "date": "2026-06-09",
+                    "title": f"Story {fid}",
+                    "url": url,
+                    "source_id": "robot-report",
+                    "region": "global",
+                    "tier": 2,
+                    "theme_ids": ["physical-ai"],
+                    "summary": "s",
+                }
+            )
+
+        # pick_resample takes every 5th finding, so f-01 is the sampled one.
+        findings = [finding(f"f-{i:02d}", f"https://example.com/{i}") for i in range(1, 7)]
+        crawl = FakeCrawl(pages={f"https://example.com/{i}": ("t", "m") for i in range(2, 7)})
+        rejected = []
+
+        kept = await harvest_node_mod._resample(crawl, findings, rejected)
+
+        assert [item.url for item in rejected] == ["https://example.com/1"]
+        assert [item.reason for item in rejected] == ["url_404"]
+        assert "f-01" not in {f.id for f in kept}
+        assert len(kept) == len(findings) - 1
+
+    async def test_live_urls_are_all_kept(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node_mod
+        from hipeac_agents.agents.vision_watch.schemas import Finding
+
+        findings = [
+            Finding.model_validate(
+                {
+                    "id": f"f-{i:02d}",
+                    "date": "2026-06-09",
+                    "title": "t",
+                    "url": f"https://example.com/{i}",
+                    "source_id": "robot-report",
+                    "region": "global",
+                    "tier": 2,
+                    "theme_ids": ["physical-ai"],
+                    "summary": "s",
+                }
+            )
+            for i in range(1, 7)
+        ]
+        crawl = FakeCrawl(pages={f"https://example.com/{i}": ("t", "m") for i in range(1, 7)})
+        rejected = []
+
+        kept = await harvest_node_mod._resample(crawl, findings, rejected)
+
+        assert not rejected
+        assert len(kept) == len(findings)
 
 
 class TestFeedChannel:

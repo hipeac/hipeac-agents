@@ -1,5 +1,6 @@
 """The digest node's orchestration: prose calls, markdown assembly, write, send."""
 
+import logging
 from typing import Any
 
 from hipeac_agents.agents.vision_watch import settings as watch_settings
@@ -22,6 +23,9 @@ from hipeac_agents.services.urls import display_domain
 
 from .models import DigestProse, InBrief, SignalGroup, SignalGroups
 from .prompts import DIGEST_IN_BRIEF, DIGEST_ITEM, DIGEST_SIGNALS
+
+
+logger = logging.getLogger(__name__)
 
 
 async def _item_prose(llm: Any, context: str) -> DigestProse:
@@ -267,6 +271,14 @@ async def digest_node(
     :returns: State updates: digest markdown, sent flag.
     """
     week = state.week
+
+    # Preflight: the digest is write-once, so composing a week that already
+    # has one would pay for every prose call and then raise on the write.
+    # A digest composed once is also a digest sent once — no re-send here.
+    if recorded := workspace.read_weekly_digest(week):
+        logger.info("week %s already has a digest; skipping composition and send", week)
+        return {"digest_markdown": recorded, "digest_sent": False}
+
     theme_defs = workspace.read_themes()
     themes = [theme.theme for theme in theme_defs]
     cluster_data = _collect_clusters(week, themes)

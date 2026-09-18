@@ -1,5 +1,6 @@
 """The monthly digest node: the month's synthesis from the cluster logs."""
 
+import logging
 from datetime import date, timedelta
 from typing import Any
 
@@ -21,6 +22,9 @@ from hipeac_agents.storage import WorkspaceError
 
 from .models import MonthlyBottomLine, TrendProse
 from .prompts import MONTHLY_BOTTOM_LINE, MONTHLY_TREND
+
+
+logger = logging.getLogger(__name__)
 
 
 def month_weeks(month: str) -> set[str]:
@@ -278,6 +282,14 @@ async def monthly_node(
     :returns: State updates: digest markdown, sent flag.
     """
     month = state.month
+
+    # Preflight: the monthly digest is write-once, so synthesising a month
+    # that already has one would pay for every prose call and then raise on
+    # the write. A digest composed once is also a digest sent once.
+    if recorded := workspace.read_monthly_digest(month):
+        logger.info("month %s already has a digest; skipping synthesis and send", month)
+        return {"digest_markdown": recorded, "digest_sent": False}
+
     themes = [theme.theme for theme in workspace.read_themes()]
     weeks = month_weeks(month)
 
