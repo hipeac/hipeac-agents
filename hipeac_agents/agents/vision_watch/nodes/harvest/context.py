@@ -68,6 +68,7 @@ class HarvestContext:
         item_summary: str,
         page_title: str,
         themes: list[schemas.ThemeDef],
+        tip: bool = False,
     ) -> GateVerdict:
         """Run the merged verification gate for one candidate.
 
@@ -81,11 +82,20 @@ class HarvestContext:
         """
         definitions = "\n".join(f"- {t.theme}: {t.definition} (keywords: {', '.join(t.keywords)})" for t in themes)
 
+        tip_suffix = (
+            "\n\nThis candidate is a board tip a human editor flagged. If it bears on no "
+            "watched theme, still return the single closest theme id in theme_ids: a tip "
+            "is never off-theme."
+            if tip
+            else ""
+        )
+
         return await self._invoke(
             GateVerdict,
             prompts.GATE
             + f"\n\nWatched themes:\n{definitions}"
-            + f"\n\nClaimed headline: {item_title}\nClaimed summary: {item_summary}\nActual page title: {page_title}",
+            + f"\n\nClaimed headline: {item_title}\nClaimed summary: {item_summary}\nActual page title: {page_title}"
+            + tip_suffix,
         )
 
     async def near_match_groups(self, items: list[tuple[str, str]]) -> NearMatchGroups:

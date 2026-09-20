@@ -32,6 +32,8 @@ class TestFinding:
 
         assert finding.date == date(2026, 6, 9)
         assert finding.tier == 2
+        # Significance defaults to the gate scale's mid-point when unrecorded.
+        assert finding.significance == 3
 
     @pytest.mark.parametrize("tier", [0, 5, "high"])
     def test_rejects_tier_outside_scale(self, tier):
@@ -77,6 +79,7 @@ class TestRejectedItem:
             "newsletter_mismatch",
             "board_tip_unresolved",
             "unverified_sweep",
+            "source_cap",
         ],
     )
     def test_accepts_every_documented_reason(self, reason):

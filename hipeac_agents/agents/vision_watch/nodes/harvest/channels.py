@@ -6,7 +6,9 @@ verification gate (``_gate_candidate``) is shared by all four channels.
 """
 
 import logging
+import re
 from datetime import UTC, date, datetime, time, timedelta
+from html import unescape
 from typing import Any
 
 from hipeac_agents.agents.vision_watch import schemas
@@ -75,6 +77,7 @@ async def _gate_candidate(
     themes: list[schemas.ThemeDef],
     fallback_source_id: str,
     access_method: str,
+    tip: bool = False,
 ) -> tuple[list[Finding], list[RejectedItem]]:
     """Run the window/theme/duplicate/verification gates on one candidate.
 
@@ -84,6 +87,9 @@ async def _gate_candidate(
     :param source: The catalog source the candidate came from, if any.
     :param fallback_source_id: ``"sweep"`` or ``"board-tip"`` for non-catalog items.
     :param access_method: e.g. ``"firecrawl"``, ``"newsletter"``, ``"board-tip"``.
+    :param tip: Board-tip lead: an editor flagged it, so the keyword and
+        title-matching gates step aside and the gate call must still name the
+        closest theme.
     :returns: ``(verified_findings, rejected_items)`` for this candidate.
     """
     source_id = source.id if source else fallback_source_id
@@ -101,7 +107,7 @@ async def _gate_candidate(
     # no theme keyword is off-theme without a scrape or a judgement call;
     # a certainly-dead URL dies without a Firecrawl call.
     all_keywords = [keyword for theme in themes for keyword in theme.keywords]
-    if keyword_hits(f"{candidate.title} {candidate.summary}", all_keywords) == 0:
+    if not tip and keyword_hits(f"{candidate.title} {candidate.summary}", all_keywords) == 0:
         return [], [_reject(candidate, source_id, "off_theme")]
     if http_url_is_dead(candidate.url):
         return [], [_reject(candidate, source_id, "url_404")]
@@ -118,9 +124,9 @@ async def _gate_candidate(
             detail = f"near_window ({days_out}d outside) published {item_date.isoformat()}" if days_out <= 7 else ""
             return [], [_reject(candidate, source_id, "out_of_window", detail)]
 
-    verdict = await ctx.gate_candidate(candidate.title, candidate.summary, page.title, themes)
+    verdict = await ctx.gate_candidate(candidate.title, candidate.summary, page.title, themes, tip=tip)
 
-    if not verdict.title_matches:
+    if not verdict.title_matches and not tip:
         return [], [_reject(candidate, source_id, "title_mismatch", verdict.title_detail)]
 
     if not verdict.theme_ids:
@@ -141,11 +147,35 @@ async def _gate_candidate(
         tier=cap_tier(verdict.tier, source.tier if source else 4),
         theme_ids=theme_ids,
         datapoint=verdict.datapoint or candidate.datapoint,
-        summary=candidate.summary or verdict.title_detail,
+        summary=verdict.summary or candidate.summary or verdict.title_detail,
+        significance=verdict.significance,
         access_method=access_method,
     )
 
     return [finding], []
+
+
+_FEED_MARKUP = re.compile(r"<[^>]+>")
+_FEED_PREAMBLE = re.compile(r"^(?:arxiv:\S+\s*)?announce type:\s*\S+\s*(?:abstract:\s*)?", re.IGNORECASE)
+_ABSTRACT_LEAD = re.compile(r"^abstract:\s*", re.IGNORECASE)
+
+
+def _clean_feed_summary(raw: str) -> str:
+    """Normalise a feed summary into plain readable text.
+
+    Feed entries arrive as raw markup — WordPress teaser paragraphs wrapped in
+    ``<p>`` tags, arXiv announcements prefixed with their
+    ``arXiv:IDvN Announce Type: ... Abstract:`` boilerplate — and this text
+    flows verbatim into findings, clusters and the digest if left as-is.
+
+    :param raw: The unprocessed feed summary.
+    :returns: The plain-text summary, truncated to the candidate limit.
+    """
+    text = _FEED_MARKUP.sub(" ", unescape(raw))
+    text = " ".join(text.split())
+    text = _FEED_PREAMBLE.sub("", text)
+    text = _ABSTRACT_LEAD.sub("", text)
+    return text[:500]
 
 
 def parse_feed_entries(xml: str, window_start: date, window_end: date, limit: int = 40) -> list[CandidateItem]:
@@ -192,7 +222,7 @@ def parse_feed_entries(xml: str, window_start: date, window_end: date, limit: in
                 title=(getattr(entry, "title", "") or "").strip(),
                 url=link,
                 date=entry_date.isoformat() if entry_date else "",
-                summary=(getattr(entry, "summary", "") or "").strip()[:500],
+                summary=_clean_feed_summary(getattr(entry, "summary", "") or ""),
             )
         )
     return items
@@ -436,6 +466,45 @@ async def harvest_inbox_unattributed(
     )
 
 
+_FORWARDED_FROM = re.compile(r"(?m)^\s*From:\s*(.+?)\s*$")
+
+
+def _original_tipper(body: str) -> str | None:
+    """Find the original sender named in a forwarded message body.
+
+    A tip often reaches the agent inbox one hop late: someone mails the
+    vision address, a colleague forwards it, and the envelope sender becomes
+    the forwarder. Mail clients keep the original author in the quoted
+    forward header (``From: Name <address>``), which credits the tip to the
+    person who actually found it.
+
+    :param body: The message body text.
+    :returns: The quoted ``From:`` value, or ``None`` when the body carries
+        no forward header.
+    """
+    match = _FORWARDED_FROM.search(body or "")
+    if not match:
+        return None
+
+    return match.group(1).strip() or None
+
+
+def _display_sender(sender: str) -> str:
+    """Return a message sender as a human-readable name.
+
+    ``"Eneko Illarramendi <eneko@x.be>"`` reads as ``"Eneko Illarramendi"``;
+    a bare address stays a bare address.
+
+    :param sender: The message's ``From`` value.
+    :returns: The display name when one exists, the address otherwise.
+    """
+    if "<" in sender:
+        name = sender.split("<", 1)[0].strip().strip('"').strip()
+        if name:
+            return name
+    return sender.strip()
+
+
 async def harvest_board_tips(
     ctx: HarvestContext,
     services: Services,
@@ -468,8 +537,9 @@ async def harvest_board_tips(
     verified: list[Finding] = []
     rejected: list[RejectedItem] = []
     for message in messages:
-        sender = message.from_
         body = await services.mail.get_message_text(inbox, message.message_id)
+        # A forwarded tip credits its original author, not the forwarder.
+        sender = _original_tipper(body) or message.from_
         links = extract_links(body)
         if not links:
             rejected.append(
@@ -478,7 +548,7 @@ async def harvest_board_tips(
                     claimed_title=message.subject,
                     source_id="board-tip",
                     reason="board_tip_unresolved",
-                    detail=f"from {sender}",
+                    detail=f"board tip from {_display_sender(sender)}",
                 )
             )
             continue
@@ -489,11 +559,16 @@ async def harvest_board_tips(
         )
         candidate = candidate.model_copy(update={"url": page.url if page else links[0]})
         findings, rejects = await _gate_candidate(
-            ctx, services, candidate, None, window_start, window_end, prior, themes, "board-tip", "board-tip"
+            ctx, services, candidate, None, window_start, window_end, prior, themes, "board-tip", "board-tip", tip=True
         )
+        for reject in rejects:
+            reject.detail = f"board tip from {_display_sender(sender)}" + (
+                f": {reject.detail}" if reject.detail else ""
+            )
+
         if findings:
             findings[0].source_id = "board-tip"
-            findings[0].summary = (findings[0].summary + f" [flagged by {sender}]").strip()
+            findings[0].summary = (findings[0].summary + f" [flagged by {_display_sender(sender)}]").strip()
             verified.extend(findings)
         else:
             rejected.extend(
@@ -504,7 +579,7 @@ async def harvest_board_tips(
                         claimed_title=message.subject,
                         source_id="board-tip",
                         reason="board_tip_unresolved",
-                        detail=f"from {sender}",
+                        detail=f"board tip from {_display_sender(sender)}",
                     )
                 ]
             )

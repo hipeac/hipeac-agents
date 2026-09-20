@@ -161,7 +161,9 @@ async def harvest_node(
         )
 
     # Integration: URL dedupe, near-match fold, re-sample, write.
-    merged = _merge_url_duplicates(verified)
+    capped, capped_rejects = _cap_source_volume(verified)
+
+    merged = _merge_url_duplicates(capped)
     numbered = _assign_ids(state.week, merged)
     numbered, folded_rejects = await _fold_near_matches(ctx, numbered)
     numbered = await _resample(services.crawl, numbered, rejected)
@@ -170,7 +172,7 @@ async def harvest_node(
     rejected_file = RejectedFile(
         week=state.week,
         created=date.today(),
-        rejected=dedupe_rejects(rejected + folded_rejects),
+        rejected=dedupe_rejects(rejected + capped_rejects + folded_rejects),
     )
     workspace.write_findings_file(findings_file)
     workspace.write_rejected_file(rejected_file)
@@ -201,6 +203,73 @@ def _join_corroboration(*parts: str | None) -> str | None:
     :returns: The joined corroboration, or ``None`` when nothing was given.
     """
     return "; ".join(filter(None, parts)) or None
+
+
+# Weekly bounds on recorded findings per source, one criterion for every
+# source. High-volume feeds (arXiv category feeds, aggregators, newsletters)
+# can pass dozens of in-window candidates a day — every one trivially
+# on-theme by title and abstract — which floods clusters and inflates the
+# finding counts the trend thresholds rely on. Each source keeps its gate
+# call's genuinely significant developments, bounded 2-4, audited otherwise.
+_SOURCE_KEEP_MIN = 2
+_SOURCE_KEEP_MAX = 4
+_SOURCE_SIGNIFICANCE_FLOOR = 4
+
+
+def _cap_source_volume(
+    findings: list[Finding],
+) -> tuple[list[Finding], list[RejectedItem]]:
+    """Cap every source at its most significant findings of the week.
+
+    A source keeps every development the gate call scored
+    ``significance >= 4``, bounded to 2-4 per source: fewer than the floor
+    qualifying keeps the top ranked developments anyway (a quiet week still
+    records something), more than the ceiling trims to the strongest.
+    Selection is deterministic over a judgement recorded once at gate time;
+    the dropped developments move to the rejected audit with reason
+    ``source_cap``, so nothing is lost silently.
+
+    :param findings: The verified findings from all channels.
+    :returns: ``(capped findings, rejected overflow items)``.
+    """
+    capped: list[Finding] = []
+    overflow: list[RejectedItem] = []
+
+    by_source: dict[str, list[Finding]] = {}
+    for finding in findings:
+        by_source.setdefault(finding.source_id, []).append(finding)
+
+    for group in by_source.values():
+        if len(group) <= _SOURCE_KEEP_MAX:
+            capped.extend(group)
+            continue
+
+        group.sort(key=lambda f: (-f.significance, f.tier, -f.date.toordinal()))
+        keep = [f for f in group if f.significance >= _SOURCE_SIGNIFICANCE_FLOOR]
+        if len(keep) < _SOURCE_KEEP_MIN:
+            keep = group[:_SOURCE_KEEP_MIN]
+        keep = keep[:_SOURCE_KEEP_MAX]
+        capped.extend(keep)
+
+        kept_urls = {f.url for f in keep}
+        for finding in group:
+            if finding.url not in kept_urls:
+                overflow.append(
+                    RejectedItem(
+                        url=finding.url,
+                        claimed_title=finding.title,
+                        source_id=finding.source_id,
+                        reason="source_cap",
+                        detail=(
+                            f"source volume cap: kept {len(keep)} of {len(group)} "
+                            f"(significance floor {_SOURCE_SIGNIFICANCE_FLOOR}, "
+                            f"bounded {_SOURCE_KEEP_MIN}-{_SOURCE_KEEP_MAX})"
+                        ),
+                        summary=finding.summary,
+                    )
+                )
+
+    return capped, overflow
 
 
 def _merge_url_duplicates(findings: list[Finding]) -> list[Finding]:

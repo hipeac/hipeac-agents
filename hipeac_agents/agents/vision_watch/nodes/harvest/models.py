@@ -33,6 +33,21 @@ class GateVerdict(BaseModel):
     theme_ids: list[str] = Field(description="Watched theme ids the candidate bears on; empty if none")
     tier: int = Field(description="Evidence tier per the development's state: 1-4")
     datapoint: str = Field(default="", description="Single most notable figure, e.g. '$900M'; empty if none")
+    summary: str = Field(
+        default="",
+        description=(
+            "One-sentence self-contained account of what happened, for the digest; "
+            "empty only when the candidate summary is already a clean one-liner"
+        ),
+    )
+    significance: int = Field(
+        default=3,
+        description=(
+            "Editorial significance for the Vision watch, 1 (routine increment) "
+            "to 5 (field-shifting result or deployment)"
+        ),
+    )
+
     title_matches: bool = Field(default=True, description="Page title refers to the same development as the headline")
     title_detail: str = Field(default="", description="Why the title does not match, when it does not")
 

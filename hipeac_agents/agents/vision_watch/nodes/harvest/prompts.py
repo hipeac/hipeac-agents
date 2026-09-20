@@ -37,6 +37,21 @@ development, or subject as the claimed headline? Wording may differ; subject
 may not. Set title_matches=false when the page is about something else, is a
 listing or landing page that merely mentions the headline, or is an
 error/paywall page — and say why in title_detail.
+
+4. SUMMARY: one-sentence account of what happened (max 160 characters),
+self-contained and specific — a busy researcher should get the story from
+the sentence alone. Never copy the input summary verbatim when it runs
+longer than two sentences; compress it. Leave empty only when the input
+summary is already one clean sentence.
+
+5. SIGNIFICANCE: how notable is this development for a European
+computing-industry watch — 1 routine increment, 5 field-shifting result
+or deployment. Judge from the item's content: novelty, scale of claims,
+breadth of impact — never from how often its source publishes. Use the
+full range: 2 for incremental workshop-quality work, 3 for solid results
+of moderate interest, 4 for results that change what practitioners can
+do or strong industry signals, 5 only for rare field-shifting results.
+When torn between two scores, pick the lower.
 """
 
 NEAR_MATCH = """\

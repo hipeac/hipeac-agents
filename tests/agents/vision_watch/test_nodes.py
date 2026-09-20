@@ -928,6 +928,98 @@ class TestDigestNode:
         shared_lines = [line for line in across.splitlines() if "https://example.com/shared" in line]
         assert len(shared_lines) == 1
         assert "in cluster-a, cluster-b" in shared_lines[0]
+        # No board tips recorded this week: no tips section either.
+        assert "## Board tips this week" not in updates["digest_markdown"]
+
+    async def test_theme_section_caps_entry_lines(self, llm):
+        """A high-volume week must not print every entry: strongest first,
+        capped, with the overflow counted."""
+        from datetime import date as date_cls
+
+        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
+
+        def entry(n: int) -> ClusterEntry:
+            return ClusterEntry.model_validate(
+                {
+                    "week": "2026-W24",
+                    "finding_id": f"f-{n:02d}",
+                    "source_id": "darpa-news",
+                    "source_class": "programmes",
+                    "tier": (n % 4) + 1,
+                    "region": "global",
+                    "date": f"2026-06-{9 - (n % 9):02d}",
+                    "note": f"Entry {n}",
+                    "url": f"https://example.com/{n}",
+                }
+            )
+
+        workspace.append_cluster(
+            Cluster(id="cluster-a", name="Cluster A", opened="2026-W24", entries=[entry(n) for n in range(14)]),
+            theme="agentic-ai",
+            created=date_cls(2026, 1, 8),
+        )
+        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
+            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
+        )
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        state = VisionWatchState.model_construct(week="2026-W24")
+
+        updates = await digest_node_mod.digest_node(
+            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
+        )
+
+        across = updates["digest_markdown"].split("## Across the themes")[1].split("## Trending this week")[0]
+        item_lines = [line for line in across.splitlines() if line.startswith("- _Entry")]
+        overflow = [line for line in across.splitlines() if "more entries this week" in line]
+        assert len(item_lines) == 12
+        assert overflow == ["- (+2 more entries this week — see the theme's cluster log.)"]
+        # Strongest tier first, newest first within the tier: entry 0 is the
+        # only tier-1 entry dated 2026-06-09.
+        assert item_lines[0] == "- _Entry 0_ — [example.com](https://example.com/0) — in cluster-a"
+
+    async def test_board_tips_render_in_own_section_even_unclustered(self, llm):
+        """A board tip is editor-flagged: it must stay visible in the digest
+        even when the grouping call left it in no cluster at all."""
+        from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        workspace.write_findings_file(
+            FindingsFile(
+                week="2026-W24",
+                created=date(2026, 6, 13),
+                findings=[
+                    Finding(
+                        id="f-2026-W24-01",
+                        date=date(2026, 6, 12),
+                        title="LLMs as a cognitive virus",
+                        url="https://arxiv.org/html/2609.03344v1",
+                        source_id="board-tip",
+                        region="global",
+                        tier=4,
+                        theme_ids=["agentic-society"],
+                        datapoint="",
+                        summary="An essay frames LLMs as a cognitive virus. [flagged by Test Sender]",
+                        significance=2,
+                        access_method="board-tip",
+                    )
+                ],
+            )
+        )
+        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
+            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
+        )
+
+        updates = await digest_node_mod.digest_node(
+            VisionWatchState.model_construct(week="2026-W24"),
+            services=Services(crawl=None, mail=None, vision=None),
+            llm=llm,
+        )
+
+        tips = updates["digest_markdown"].split("## Board tips this week")[1].split("## Across the themes")[0]
+        assert "LLMs as a cognitive virus" in tips
+        assert "https://arxiv.org/html/2609.03344v1" in tips
+        assert "flagged by Test Sender" in tips
 
     async def test_off_theme_rejects_render_as_signal_group(self, llm):
         from hipeac_agents.agents.vision_watch.nodes.digest import SignalGroups
@@ -1171,6 +1263,82 @@ class TestUrlDedupe:
         assert "confirmed by vendor" in merged[0].corroboration
         assert "seen at aggregator" in merged[0].corroboration
         assert "aggregator version" in merged[0].corroboration
+
+
+class TestCapSourceVolume:
+    """Every source keeps its most significant developments, bounded 2-4."""
+
+    @staticmethod
+    def _finding(n: int, source_id: str, tier: int = 2, significance: int = 3) -> object:
+        from hipeac_agents.agents.vision_watch.schemas import Finding
+
+        return Finding(
+            id="",
+            date=date(2026, 6, 12 - n),
+            title=f"Item {n}",
+            url=f"https://example.com/{source_id}-{n}",
+            source_id=source_id,
+            region="global",
+            tier=tier,
+            theme_ids=["physical-ai"],
+            datapoint="",
+            summary=f"Summary {n}.",
+            significance=significance,
+        )
+
+    def test_all_significant_qualifying_below_ceiling_kept(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _cap_source_volume
+
+        findings = [self._finding(n, "arxiv-cs-ro", significance=4) for n in range(3)]
+        kept, rejected = _cap_source_volume(findings)
+
+        assert len(kept) == 3
+        assert rejected == []
+
+    def test_ceiling_trims_significant_overflow(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _SOURCE_KEEP_MAX, _cap_source_volume
+
+        findings = [self._finding(n, "arxiv-cs-ro", significance=5) for n in range(6)]
+        kept, rejected = _cap_source_volume(findings)
+
+        assert len(kept) == _SOURCE_KEEP_MAX
+        assert len(rejected) == 6 - _SOURCE_KEEP_MAX
+        assert {r.reason for r in rejected} == {"source_cap"}
+        assert {r.url for r in rejected}.isdisjoint({f.url for f in kept})
+        # Newest first within equal significance — deterministic.
+        assert {f.url for f in kept} == {f"https://example.com/arxiv-cs-ro-{n}" for n in range(_SOURCE_KEEP_MAX)}
+
+    def test_quiet_source_falls_back_to_minimum(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _SOURCE_KEEP_MIN, _cap_source_volume
+
+        findings = [self._finding(n, "arxiv-cs-ro") for n in range(6)]  # all significance 3
+        kept, rejected = _cap_source_volume(findings)
+
+        assert len(kept) == _SOURCE_KEEP_MIN
+        assert len(rejected) == 6 - _SOURCE_KEEP_MIN
+        # Fallback keeps the newest routine developments.
+        assert {f.url for f in kept} == {f"https://example.com/arxiv-cs-ro-{n}" for n in range(_SOURCE_KEEP_MIN)}
+
+    def test_significance_ranks_above_recency(self):
+        """Regression: with uniform significance 3, the fallback must keep
+        the newest, but a significant older item outranks recent routine
+        items."""
+        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _cap_source_volume
+
+        findings = [self._finding(n, "arxiv-cs-ro") for n in range(4)]
+        findings[3] = self._finding(3, "arxiv-cs-ro", significance=5)  # oldest, most significant
+        kept, _ = _cap_source_volume(findings)
+
+        assert "https://example.com/arxiv-cs-ro-3" in {f.url for f in kept}
+
+    def test_small_source_uncapped(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _cap_source_volume
+
+        findings = [self._finding(n, "darpa-news", significance=4) for n in range(4)]
+        kept, rejected = _cap_source_volume(findings)
+
+        assert len(kept) == 4
+        assert rejected == []
 
 
 class TestResample:

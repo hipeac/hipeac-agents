@@ -17,6 +17,7 @@ RejectionReason = Literal[
     "newsletter_mismatch",
     "board_tip_unresolved",
     "unverified_sweep",
+    "source_cap",
 ]
 SourceClass = Literal[
     "programmes",
@@ -53,6 +54,7 @@ class Finding(BaseModel):
     theme_ids: list[str] = []
     datapoint: str = ""
     summary: str
+    significance: int = 3
     access_method: AccessMethod | None = None
     corroboration: str | None = None
 

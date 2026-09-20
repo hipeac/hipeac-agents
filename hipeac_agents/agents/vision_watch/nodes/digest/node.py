@@ -27,6 +27,10 @@ from .prompts import DIGEST_IN_BRIEF, DIGEST_ITEM, DIGEST_SIGNALS
 
 logger = logging.getLogger(__name__)
 
+# Per-theme entry cap in "Across the themes": a week flooded by a high-volume
+# feed must not print every entry, only its strongest.
+_MAX_THEME_ENTRIES = 12
+
 
 async def _item_prose(llm: Any, context: str) -> DigestProse:
     """Write one digest item's prose.
@@ -204,12 +208,33 @@ def compose_digest_markdown(
                 found = by_finding.setdefault(entry.finding_id, {"entry": entry, "cluster_ids": []})
                 found["cluster_ids"].append(cid)
 
-        for found in by_finding.values():
+        ranked = sorted(
+            by_finding.values(),
+            key=lambda found: (found["entry"].tier, -found["entry"].date.toordinal()),
+        )
+
+        for found in ranked[:_MAX_THEME_ENTRIES]:
             entry = found["entry"]
             text = entry.note or entry.title
             cluster_ids = ", ".join(found["cluster_ids"])
             lines.append(f"- _{text}_ — [{display_domain(entry.url)}]({entry.url}) — in {cluster_ids}")
 
+        if len(ranked) > _MAX_THEME_ENTRIES:
+            lines.append(
+                f"- (+{len(ranked) - _MAX_THEME_ENTRIES} more entries this week — see the theme's cluster log.)"
+            )
+
+        lines.append("")
+
+    # Board tips: a tip is an editor-flagged lead, recorded verbatim every
+    # time — even when the grouping call placed it in no cluster, where the
+    # theme sections would lose it.
+    findings_file = workspace.read_findings_file(week)
+    tips = [f for f in (findings_file.findings if findings_file else []) if f.source_id == "board-tip"]
+    if tips:
+        lines.extend(["## Board tips this week", ""])
+        for tip in tips:
+            lines.append(f"- _{tip.summary}_ — [{display_domain(tip.url)}]({tip.url})")
         lines.append("")
 
     if signal_groups:
