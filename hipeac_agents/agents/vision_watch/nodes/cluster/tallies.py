@@ -231,10 +231,12 @@ def sort_lead_candidates(
 ) -> list[tuple[Cluster, list[schemas.ClusterEntry], list[schemas.ClusterEntry]]]:
     """Rank clusters for the week's lead story ("One big thing"), strongest first.
 
-    A different question from ``sort_ranked``'s standing evidence weight: this
-    asks which cluster made *this week's* news — best tier among this week's
-    entries, burst size, an established-evidence tie-break, momentum against
-    the cluster's prior rate, then an independence discount.
+    A different question from ``sort_ranked``'s standing evidence weight: the
+    Vision wants what is emerging, not what is already big. So the lead is
+    the cluster with the most forward-significant entry this week, then the
+    most novelty (a new story, or one reaching new source classes and
+    regions), then best tier this week, burst size, candidate-trend status,
+    momentum against the cluster's prior rate, and an independence discount.
 
     :param candidates: ``(cluster, scoped_entries, this_week_entries)`` triples;
         ``scoped_entries`` is the cluster's entries through this week.
@@ -245,10 +247,12 @@ def sort_lead_candidates(
 
     def sort_key(
         item: tuple[Cluster, list[schemas.ClusterEntry], list[schemas.ClusterEntry]],
-    ) -> tuple[int, int, int, float, float]:
+    ) -> tuple[int, int, int, int, int, float, float]:
         _, scoped, this_week = item
         this_week_count, prior_rate = momentum(scoped, week)
         return (
+            -max(entry.significance or 3 for entry in this_week),
+            -novelty(scoped, week),
             evidence_strength(this_week),
             -len(this_week),
             0 if is_candidate_trend(scoped) else 1,
@@ -257,6 +261,26 @@ def sort_lead_candidates(
         )
 
     return sorted(candidates, key=sort_key)
+
+
+def novelty(entries: list[schemas.ClusterEntry], week: str) -> int:
+    """Score how new a cluster's story is this week (derived, never stored).
+
+    A cluster seen for the first time scores 1; an established one scores one
+    point per source class and per region it reaches for the first time —
+    a story spreading beyond its first outlets is how emergence shows.
+
+    :param entries: The cluster's entries through ``week``.
+    :param week: The current week label.
+    :returns: The novelty score, 0 for a story moving only where it already was.
+    """
+    earlier = [e for e in entries if e.week < week]
+    current = [e for e in entries if e.week == week]
+    if not earlier:
+        return 1
+    new_classes = {e.source_class for e in current} - {e.source_class for e in earlier}
+    new_regions = {e.region for e in current} - {e.region for e in earlier}
+    return len(new_classes) + len(new_regions)
 
 
 def group_key_by_theme(findings: list[Finding]) -> dict[str, list[Finding]]:

@@ -886,7 +886,9 @@ class TestDigestNode:
             state, services=Services(crawl=None, mail=None, vision=None), llm=llm
         )
 
-        one_big_thing = updates["digest_markdown"].split("## One big thing")[1].split("## Across the themes")[0]
+        one_big_thing = (
+            updates["digest_markdown"].split("## One big thing")[1].split("## What moved on each question")[0]
+        )
         assert "https://example.com/fresh-1" in one_big_thing
         assert "https://example.com/heavy" not in one_big_thing
 
@@ -984,7 +986,9 @@ class TestDigestNode:
             state, services=Services(crawl=None, mail=None, vision=None), llm=llm
         )
 
-        one_big_thing = updates["digest_markdown"].split("## One big thing")[1].split("## Across the themes")[0]
+        one_big_thing = (
+            updates["digest_markdown"].split("## One big thing")[1].split("## What moved on each question")[0]
+        )
         assert "https://example.com/strong-second" in one_big_thing
         assert "https://example.com/weak-first" not in one_big_thing
 
@@ -1024,6 +1028,54 @@ class TestDigestNode:
 
         prose_calls = [call for call in llm.calls if call[0] is DigestProse]
         assert len(prose_calls) == 1
+
+    async def test_brewing_section_and_question_headings(self, llm):
+        """The digest leads with what is brewing: long-horizon items and weak
+        signals from foresight sources, and each theme shows its question."""
+        from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        def finding(n: int, **extra) -> Finding:
+            base = {
+                "id": f"f-2026-W24-0{n}",
+                "date": date(2026, 6, 9),
+                "title": f"T{n}",
+                "url": f"https://example.com/b{n}",
+                "source_id": "darpa-news",
+                "region": "global",
+                "tier": 3,
+                "summary": f"Summary {n}.",
+            }
+            return Finding(**{**base, **extra})
+
+        workspace.write_findings_file(
+            FindingsFile(
+                week="2026-W24",
+                created=date(2026, 6, 13),
+                findings=[
+                    finding(1, horizon="3-5y", significance=4, forward_note="Could reset EU fab plans."),
+                    finding(2, horizon="now"),
+                    finding(3, source_id="signals-watch", horizon="1-2y"),
+                ],
+            )
+        )
+        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
+            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
+        )
+
+        updates = await digest_node_mod.digest_node(
+            VisionWatchState.model_construct(week="2026-W24"),
+            services=Services(crawl=None, mail=None, vision=None),
+            llm=llm,
+        )
+
+        markdown = updates["digest_markdown"]
+        brewing = markdown.split("## What's brewing")[1].split("## What moved on each question")[0]
+        assert "Summary 1. Could reset EU fab plans." in brewing
+        assert "(3-5y)" in brewing
+        assert "Summary 3." in brewing, "foresight sources are weak signals"
+        assert "Summary 2." not in brewing
+        assert "### physical-ai — Are AI agents entering the physical world safely?" in markdown
 
     async def test_finding_in_two_clusters_lists_both_once(self, llm):
         """Regression: a finding assigned to two clusters in the same theme
@@ -1068,7 +1120,7 @@ class TestDigestNode:
             state, services=Services(crawl=None, mail=None, vision=None), llm=llm
         )
 
-        across = updates["digest_markdown"].split("## Across the themes")[1].split("## Trending this week")[0]
+        across = updates["digest_markdown"].split("## What moved on each question")[1].split("## Trending this week")[0]
         shared_lines = [line for line in across.splitlines() if "https://example.com/shared" in line]
         assert len(shared_lines) == 1
         assert "in cluster-a, cluster-b" in shared_lines[0]
@@ -1113,7 +1165,7 @@ class TestDigestNode:
             state, services=Services(crawl=None, mail=None, vision=None), llm=llm
         )
 
-        across = updates["digest_markdown"].split("## Across the themes")[1].split("## Trending this week")[0]
+        across = updates["digest_markdown"].split("## What moved on each question")[1].split("## Trending this week")[0]
         item_lines = [line for line in across.splitlines() if line.startswith("- _Entry")]
         overflow = [line for line in across.splitlines() if "more entries this week" in line]
         assert len(item_lines) == 12
@@ -1160,7 +1212,7 @@ class TestDigestNode:
             llm=llm,
         )
 
-        tips = updates["digest_markdown"].split("## Board tips this week")[1].split("## Across the themes")[0]
+        tips = updates["digest_markdown"].split("## Board tips this week")[1].split("## What moved on each question")[0]
         assert "LLMs as a cognitive virus" in tips
         assert "https://arxiv.org/html/2609.03344v1" in tips
         assert "flagged by Test Sender" in tips

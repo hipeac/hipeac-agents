@@ -255,6 +255,40 @@ class TestSortLeadCandidates:
         assert ranked[0][0].id == "burst"
 
 
+class TestLeadEmergence:
+    """The lead is what is emerging, not what is already big."""
+
+    def _cluster(self, cid: str, entries: list[ClusterEntry]) -> Cluster:
+        return Cluster.model_validate(
+            {"id": cid, "name": cid, "opened": "2026-W01", "entries": [e.model_dump() for e in entries]}
+        )
+
+    def test_forward_significance_beats_tier(self, catalog):
+        solid = [entry(finding_id="s-1", tier=1).model_copy(update={"significance": 3})]
+        consequential = [entry(finding_id="c-1", tier=3).model_copy(update={"significance": 5})]
+        candidates = [
+            (self._cluster("solid", solid), solid, solid),
+            (self._cluster("consequential", consequential), consequential, consequential),
+        ]
+
+        assert cluster.sort_lead_candidates(candidates, "2026-W24", catalog)[0][0].id == "consequential"
+
+    def test_story_reaching_new_classes_beats_one_repeating_itself(self, catalog):
+        old = [entry(week="2026-W20", finding_id=f"o-{i}") for i in range(5)]
+        repeating_now = [entry(finding_id="r-1")]
+        spreading_now = [entry(finding_id="p-1", source_class="programmes", region="eu")]
+        repeating = old + repeating_now
+        spreading = [e.model_copy(update={"finding_id": f"x-{i}"}) for i, e in enumerate(old)] + spreading_now
+        candidates = [
+            (self._cluster("repeating", repeating), repeating, repeating_now),
+            (self._cluster("spreading", spreading), spreading, spreading_now),
+        ]
+
+        assert cluster.novelty(spreading, "2026-W24") == 2
+        assert cluster.novelty(repeating, "2026-W24") == 0
+        assert cluster.sort_lead_candidates(candidates, "2026-W24", catalog)[0][0].id == "spreading"
+
+
 class TestRanking:
     def _cluster(self, cid: str, entries: list[ClusterEntry]) -> tuple[Cluster, list[ClusterEntry]]:
         return Cluster.model_validate(
