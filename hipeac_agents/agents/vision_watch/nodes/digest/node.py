@@ -55,7 +55,7 @@ async def _signal_groups(llm: Any, rejects: list[RejectedItem], themes: list[The
 
     LLM judgement call (signal triage) — see ``prompts.DIGEST_SIGNALS``.
     """
-    theme_text = "\n".join(f"- {t.theme}: {t.definition}" for t in themes)
+    theme_text = "\n".join(t.brief() for t in themes)
     rejects_text = "\n".join(f"- {r.url} — {r.claimed_title}: {r.summary}" for r in rejects)
     runner = llm.with_structured_output(SignalGroups)
     return await runner.ainvoke(

@@ -266,14 +266,19 @@ class TestHarvestNode:
             "      region: global\n"
             "      tier: 2\n"
             "      independence: high\n"
-            "      stream: evidence\n"
             "      web: false\n"
-            "      newsletter: true\n",
+            "      senders: [newsletter@substack.com]\n",
             encoding="utf-8",
         )
 
+        from datetime import UTC, datetime
+
         message = MailMessage(
-            inbox_id="vision-news", message_id="m1", from_="newsletter@substack.com", subject="Weekly"
+            inbox_id="vision-news",
+            message_id="m1",
+            from_="newsletter@substack.com",
+            subject="Weekly",
+            timestamp=datetime(2026, 6, 10, 8, tzinfo=UTC),
         )
         body = "This week: Humanoid deployed https://example.com/item — full story inside."
         llm.handlers[CandidateList] = make_candidate_handler(
@@ -292,7 +297,9 @@ class TestHarvestNode:
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl, mail), llm=llm)
 
-        assert any(f.access_method == "newsletter" for f in updates["findings"])
+        newsletter = [f for f in updates["findings"] if f.access_method == "newsletter"]
+        assert [f.source_id for f in newsletter] == ["newsletter-source"]
+        assert newsletter[0].date == date(2026, 6, 10), "an undated newsletter item takes its message date"
 
     async def test_crawl_missing_fails_all_due_sources(self, data_dir, llm, weekly_catalog):
         from hipeac_agents.agents.vision_watch.state import VisionWatchState

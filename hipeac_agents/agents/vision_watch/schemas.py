@@ -18,6 +18,8 @@ RejectionReason = Literal[
     "board_tip_unresolved",
     "unverified_sweep",
     "source_cap",
+    "undated",
+    "roundup",
 ]
 SourceClass = Literal[
     "programmes",
@@ -35,7 +37,8 @@ SourceClass = Literal[
     "community",
 ]
 Independence = Literal["high", "med", "low"]
-Chapter = Literal["future-ahead", "technology-roadmap"]
+Direction = Literal["strengthens", "weakens", "new"]
+Horizon = Literal["now", "1-2y", "3-5y"]
 
 AccessMethod = Literal["direct", "firecrawl", "newsletter", "board-tip", "sweep"]
 HealthLabel = Literal["ok", "skipped", "fetch_failed", "empty_feed", "truncated_feed", "stale_listing", "silent"]
@@ -57,6 +60,9 @@ class Finding(BaseModel):
     significance: int = 3
     access_method: AccessMethod | None = None
     corroboration: str | None = None
+    direction: Direction | None = None
+    horizon: Horizon | None = None
+    forward_note: str = ""
 
 
 class FindingsFile(BaseModel):
@@ -129,6 +135,9 @@ class ClusterEntry(BaseModel):
     title: str = ""
     note: str
     url: str
+    significance: int | None = None
+    direction: Direction | None = None
+    horizon: Horizon | None = None
 
 
 class Cluster(BaseModel):
@@ -149,13 +158,35 @@ class ClusterLog(BaseModel):
 
 
 class ThemeDef(BaseModel):
-    """A watched theme from the human-owned ``config/themes.yaml``."""
+    """A watch question from the human-owned ``config/themes.yaml``.
+
+    Each theme is framed as an open question the next Vision must answer;
+    an item is relevant when it moves that question. ``look_for`` names
+    real-world indicators (programmes, companies, products), since news
+    never uses the Vision's own vocabulary; ``keywords`` are optional hints.
+    """
 
     theme: str
-    chapter: Chapter
-    definition: str
-    keywords: list[str]
+    question: str
+    why: str = ""
+    look_for: list[str] = []
+    keywords: list[str] = []
     sweep_query: str | None = None
+    chapter: str = ""
+
+    def brief(self) -> str:
+        """Render the question for a judgement prompt.
+
+        :returns: One line: id, question, why, and what to look for.
+        """
+        parts = [f"- {self.theme}: {self.question}"]
+        if self.why:
+            parts.append(f"Why it matters: {self.why}")
+        if self.look_for:
+            parts.append(f"Look for: {', '.join(self.look_for)}")
+        if self.keywords:
+            parts.append(f"Hints: {', '.join(self.keywords)}")
+        return " ".join(parts)
 
 
 class ClassDefaults(BaseModel):

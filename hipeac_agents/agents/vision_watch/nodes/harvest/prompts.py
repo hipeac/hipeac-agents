@@ -1,7 +1,7 @@
 """Prompts for the harvest node's LLM judgement calls.
 
-One prompt per structured-output model in ``models.py``. All five are
-LLM-JUDGEMENT CALLS — review before the first live run.
+One prompt per structured-output model in ``models.py``; all are
+LLM-JUDGEMENT CALLS.
 """
 
 CANDIDATE_EXTRACTION = """\
@@ -18,42 +18,70 @@ when the page shows one. Return only what the content actually contains —
 never invent items or URLs.
 """
 
+TRIAGE = """\
+You are the first filter of a watch system feeding the HiPEAC Vision 2027, a
+forward-looking roadmap for computing in Europe. The Vision cares about what
+is brewing, not only what happened: new advances, legislation and programmes
+in the pipeline, investments, dependencies and risks that could shape European
+computing over the next years.
+
+For each numbered candidate (title and summary), decide keep or drop:
+- KEEP when it could plausibly move one of the watch questions below: a
+  technical advance, a deployment, money committed, a policy or regulation
+  step, a standard, a security incident, a market or supply-chain shift, a
+  credible forecast. Real-world names count: a programme, a company, a chip,
+  a law — the news never uses the Vision's own vocabulary.
+- DROP routine marketing, product promotions, event and webinar notices, job
+  ads, hiring announcements, personnel news, generic business news, and items
+  with no bearing on computing.
+When unsure, keep: a later step judges each kept item in full.
+Return one decision per candidate, by its number.
+"""
+
 GATE = """\
-You are gating one candidate development for a HiPEAC Vision watch loop.
-Answer three questions in one verdict:
+You are judging one candidate development for the HiPEAC Vision 2027 watch,
+a forward-looking roadmap for computing in Europe. The board wants early
+signals of what is brewing, not a log of what happened. Answer in one verdict:
 
-1. THEMES: which of the watched themes does the candidate bear on, using each
-theme's definition and keywords. Only include a theme when the development
-genuinely relates to its definition — do not stretch keywords to fit.
-Possibly empty. A candidate may bear on several themes.
+1. QUESTIONS: which watch questions the candidate genuinely moves (theme_ids),
+using each question, why it matters and what to look for. Do not stretch.
+Possibly empty. A candidate may move several.
 
-2. TIER: the evidence tier per the development's state, not the source:
-1 peer-reviewed results or reproducible benchmarks; 2 committed reality —
-capital allocated, programmes adopted, hardware deployed; 3 stated intention
-— announcements, proposals, specifications; 4 trade press, commentary,
-aggregator analysis. Also extract the single most notable figure in the item,
-if any, as the datapoint (e.g. "$900M", "1,200 jobs"); leave it empty otherwise.
+2. DIRECTION and HORIZON: does it strengthen the current reading of that
+question, weaken it, or open something new; and when do its consequences land
+(now, 1-2y, 3-5y)?
 
-3. TITLE: does the actual page title refer to the same announcement,
-development, or subject as the claimed headline? Wording may differ; subject
-may not. Set title_matches=false when the page is about something else, is a
-listing or landing page that merely mentions the headline, or is an
-error/paywall page — and say why in title_detail.
+3. FORWARD NOTE: one line (max 160 characters) on what this could change for
+European computing, and when. Concrete, no hype.
 
-4. SUMMARY: one-sentence account of what happened (max 160 characters),
-self-contained and specific — a busy researcher should get the story from
-the sentence alone. Never copy the input summary verbatim when it runs
-longer than two sentences; compress it. Leave empty only when the input
-summary is already one clean sentence.
+4. TIER: how solid the evidence is, per the development's state, not the
+source: 1 peer-reviewed results or reproducible benchmarks; 2 committed
+reality — capital allocated, programmes adopted, law passed, hardware
+deployed; 3 stated intention — announcements, proposals, draft legislation,
+specifications; 4 trade press, commentary, aggregator analysis. Tier is
+confidence only: an early proposal can matter more than a finished fact.
+Also extract the single most notable figure (e.g. "$900M"), if any.
 
-5. SIGNIFICANCE: how notable is this development for a European
-computing-industry watch — 1 routine increment, 5 field-shifting result
-or deployment. Judge from the item's content: novelty, scale of claims,
-breadth of impact — never from how often its source publishes. Use the
-full range: 2 for incremental workshop-quality work, 3 for solid results
-of moderate interest, 4 for results that change what practitioners can
-do or strong industry signals, 5 only for rare field-shifting results.
-When torn between two scores, pick the lower.
+5. TITLE: does the actual page title refer to the same development as the
+claimed headline? Wording may differ; subject may not. Set
+title_matches=false when the page is about something else, is a listing or
+landing page that merely mentions the headline, or is an error/paywall page —
+and say why in title_detail.
+
+6. ROUNDUP: set is_roundup=true when the page is a weekly review, newsletter
+issue, paper roundup or list of many unrelated items rather than one
+development.
+
+7. SUMMARY: one self-contained sentence (max 160 characters) of what
+happened. Never copy a long input summary; compress it. Leave empty only when
+the input summary is already one clean sentence.
+
+8. SIGNIFICANCE: forward importance for European computing, 1-5: 1 routine
+increment; 2 incremental; 3 solid and worth tracking; 4 likely to change what
+Europe can or must do — a real advance, a binding rule, a large commitment, a
+new dependency or risk; 5 rare, likely to reshape the field or Europe's
+position. Judge the consequence, not the size of the headline or how often
+the source publishes. When torn, pick the lower.
 """
 
 NEAR_MATCH = """\

@@ -28,12 +28,12 @@ async def _group_findings(
     LLM judgement call (grouping bar) — see ``prompts.GROUPING_BAR``.
 
     :param llm: The chat model.
-    :param themes: The watched themes, for definitions.
+    :param themes: The watch questions.
     :param cluster_index: Cluster id to ``(theme, cluster)`` across all themes.
     :param findings: The week's findings.
     :returns: The grouping plan.
     """
-    theme_text = "\n".join(f"- {t.theme}: {t.definition}" for t in themes)
+    theme_text = "\n".join(t.brief() for t in themes)
     existing = (
         "\n".join(
             f"- {cid} [theme: {theme}] ({len(cluster.entries)} entries, opened {cluster.opened})"
@@ -80,6 +80,9 @@ def _entry_from_finding(week: str, finding: Finding, catalog: schemas.SourceCata
         title=finding.title,
         note=finding.summary,
         url=finding.url,
+        significance=finding.significance,
+        direction=finding.direction,
+        horizon=finding.horizon,
     )
 
 

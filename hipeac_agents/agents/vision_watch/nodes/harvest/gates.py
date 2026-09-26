@@ -78,27 +78,6 @@ def duplicate_gate(url: str, prior_findings: list[FindingsFile]) -> bool:
     return normalize_url(url) in known
 
 
-def keyword_hits(text: str, keywords: list[str]) -> int:
-    """Count case-insensitive keyword hits — the cheap pre-filter before an LLM call.
-
-    A keyword also matches without its trailing ``s`` (naive singular), so
-    ``humanoids`` hits ``Humanoid deployed``.
-
-    :param text: The item title and summary.
-    :param keywords: The watched themes' keywords.
-    :returns: Number of keyword hits.
-    """
-    lowered = text.lower()
-    hits = 0
-
-    for keyword in keywords:
-        stem = keyword.lower()
-        if stem in lowered or (stem.endswith("s") and stem[:-1] in lowered):
-            hits += 1
-
-    return hits
-
-
 def cap_tier(item_tier: int, catalog_tier: int) -> Tier:
     """Cap the item's tier by the source's catalog ceiling.
 

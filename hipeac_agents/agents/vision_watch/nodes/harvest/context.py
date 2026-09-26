@@ -12,12 +12,16 @@ from typing import Any
 from hipeac_agents.agents.vision_watch import schemas
 
 from . import prompts
-from .models import CandidateList, GateVerdict, NearMatchGroups
+from .models import CandidateList, GateVerdict, NearMatchGroups, TriageVerdict
 
 
 # Cap on page markdown fed to the extraction call — listing pages can be
 # tens of kilobytes and the relevant items sit near the top.
 EXTRACTION_INPUT_CHARS = 12_000
+
+# Candidates per triage call: large enough for one call per typical source,
+# small enough that no decision gets lost in a long list.
+TRIAGE_BATCH = 40
 
 
 class HarvestContext:
@@ -62,6 +66,30 @@ class HarvestContext:
         prompt = prompts.CANDIDATE_EXTRACTION + "\n\nPage content:\n" + text[:EXTRACTION_INPUT_CHARS]
         return await self._invoke(CandidateList, prompt)
 
+    async def triage(self, items: list[tuple[str, str]], themes: list[schemas.ThemeDef]) -> set[int]:
+        """Decide which candidates could move a watch question, in batches.
+
+        LLM judgement call (triage) — see ``prompts.TRIAGE``. A candidate the
+        model leaves out of its answer is kept: dropping is the decision that
+        must be explicit.
+
+        :param items: ``(title, summary)`` per candidate.
+        :param themes: The watch questions.
+        :returns: The indices of the candidates to keep.
+        """
+        questions = "\n".join(t.brief() for t in themes)
+        kept: set[int] = set()
+        for offset in range(0, len(items), TRIAGE_BATCH):
+            batch = items[offset : offset + TRIAGE_BATCH]
+            lines = "\n".join(f"{i}. {title} — {summary[:300]}" for i, (title, summary) in enumerate(batch))
+            verdict = await self._invoke(
+                TriageVerdict,
+                prompts.TRIAGE + f"\n\nWatch questions:\n{questions}\n\nCandidates:\n{lines}",
+            )
+            dropped = {item.index for item in verdict.items if not item.keep}
+            kept.update(offset + i for i in range(len(batch)) if i not in dropped)
+        return kept
+
     async def gate_candidate(
         self,
         item_title: str,
@@ -80,12 +108,12 @@ class HarvestContext:
         :param themes: The watched themes.
         :returns: The gate verdict: theme ids, tier, datapoint, title match.
         """
-        definitions = "\n".join(f"- {t.theme}: {t.definition} (keywords: {', '.join(t.keywords)})" for t in themes)
+        questions = "\n".join(t.brief() for t in themes)
 
         tip_suffix = (
-            "\n\nThis candidate is a board tip a human editor flagged. If it bears on no "
-            "watched theme, still return the single closest theme id in theme_ids: a tip "
-            "is never off-theme."
+            "\n\nThis candidate is a board tip a human editor flagged. If it moves no "
+            "watch question, still return the single closest question id in theme_ids: "
+            "a tip is never off-theme."
             if tip
             else ""
         )
@@ -93,7 +121,7 @@ class HarvestContext:
         return await self._invoke(
             GateVerdict,
             prompts.GATE
-            + f"\n\nWatched themes:\n{definitions}"
+            + f"\n\nWatch questions:\n{questions}"
             + f"\n\nClaimed headline: {item_title}\nClaimed summary: {item_summary}\nActual page title: {page_title}"
             + tip_suffix,
         )

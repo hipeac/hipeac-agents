@@ -6,6 +6,8 @@ One model per judgement call, paired with the prompt of the same name in
 
 from pydantic import BaseModel, Field
 
+from hipeac_agents.agents.vision_watch.schemas import Direction, Horizon
+
 
 class CandidateItem(BaseModel):
     """One candidate development extracted from a page or newsletter body."""
@@ -30,7 +32,7 @@ class GateVerdict(BaseModel):
     the weekly run affordable.
     """
 
-    theme_ids: list[str] = Field(description="Watched theme ids the candidate bears on; empty if none")
+    theme_ids: list[str] = Field(description="Ids of the watch questions the candidate moves; empty if none")
     tier: int = Field(description="Evidence tier per the development's state: 1-4")
     datapoint: str = Field(default="", description="Single most notable figure, e.g. '$900M'; empty if none")
     summary: str = Field(
@@ -43,13 +45,39 @@ class GateVerdict(BaseModel):
     significance: int = Field(
         default=3,
         description=(
-            "Editorial significance for the Vision watch, 1 (routine increment) "
-            "to 5 (field-shifting result or deployment)"
+            "Forward importance for European computing, 1 (routine increment) "
+            "to 5 (likely to reshape the field or Europe's position)"
         ),
+    )
+    direction: Direction | None = Field(
+        default=None,
+        description="How it moves its question: strengthens or weakens the current reading, or opens something new",
+    )
+    horizon: Horizon | None = Field(
+        default=None, description="When its consequences land: now, within 1-2 years, or in 3-5 years"
+    )
+    forward_note: str = Field(
+        default="", description="One line (max 160 chars): what this could change for European computing, and when"
+    )
+    is_roundup: bool = Field(
+        default=False, description="The page is a digest or round-up of many items rather than one development"
     )
 
     title_matches: bool = Field(default=True, description="Page title refers to the same development as the headline")
     title_detail: str = Field(default="", description="Why the title does not match, when it does not")
+
+
+class TriageItem(BaseModel):
+    """One candidate's triage decision."""
+
+    index: int = Field(description="The candidate's number in the list")
+    keep: bool = Field(description="Whether it could move one of the watch questions")
+
+
+class TriageVerdict(BaseModel):
+    """Keep/drop decisions for one batch of candidates."""
+
+    items: list[TriageItem] = []
 
 
 class NearMatchGroups(BaseModel):

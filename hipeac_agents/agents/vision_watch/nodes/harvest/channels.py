@@ -1,8 +1,8 @@
 """The harvest node's channels: one function per collection channel.
 
-Four channels: web, newsletter, board tips, and the general sweep. The sweep
-approximates Deep Research with one Firecrawl search per theme. The
-verification gate (``_gate_candidate``) is shared by all four channels.
+Channels: feeds, arXiv, scraped pages, newsletters, the unattributed inbox,
+board tips, and the general sweep (one date-bounded web search per watch
+question). The gate (``_gate_candidates``) is shared by all of them.
 """
 
 import logging
@@ -26,7 +26,6 @@ from .gates import (
     extract_links,
     headline_in_body,
     http_url_is_dead,
-    keyword_hits,
     parse_iso_date,
     window_gate,
 )
@@ -68,10 +67,35 @@ def _reject(candidate: Any, source_id: str, reason: str, detail: str = "") -> Re
     )
 
 
-async def _gate_candidate(
+def _pre_gate(
+    candidate: CandidateItem, source_id: str, window_start: date, window_end: date, prior: list[FindingsFile]
+) -> RejectedItem | None:
+    """Run the free checks before any judgement or scrape: window, then duplicate.
+
+    :param candidate: The candidate.
+    :param source_id: The source it came from.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param prior: All recorded findings files, for duplicate detection.
+    :returns: The rejection, or ``None`` when the candidate passes.
+    """
+    item_date = parse_iso_date(candidate.date) or parse_iso_date(candidate.summary)
+
+    if not window_gate(item_date, window_start, window_end):
+        days_out = _days_outside(item_date, window_start, window_end)
+        detail = f"near_window ({days_out}d outside) published {item_date.isoformat()}" if days_out <= 7 else ""
+        return _reject(candidate, source_id, "out_of_window", detail)
+
+    if duplicate_gate(candidate.url, prior):
+        return _reject(candidate, source_id, "duplicate")
+
+    return None
+
+
+async def _gate_candidates(
     ctx: HarvestContext,
     services: Services,
-    candidate: Any,
+    candidates: list[CandidateItem],
     source: schemas.SourceEntry | None,
     window_start: date,
     window_end: date,
@@ -79,85 +103,157 @@ async def _gate_candidate(
     themes: list[schemas.ThemeDef],
     fallback_source_id: str,
     access_method: str,
+    *,
     tip: bool = False,
-    known_page: ScrapeResult | None = None,
+    triaged: bool = False,
+    known_pages: dict[str, ScrapeResult] | None = None,
 ) -> tuple[list[Finding], list[RejectedItem]]:
-    """Run the window/theme/duplicate/verification gates on one candidate.
+    """Gate one source's candidates: free checks, one triage call, then verification.
 
-    Gate failures never drop silently: every reject carries its reason.
+    Order is cheapest first: window and duplicate cost nothing; one batched
+    triage call per source decides which candidates could move a watch
+    question; only those are scraped and get the full verdict. Gate failures
+    never drop silently: every reject carries its reason.
 
-    :param candidate: A ``CandidateItem`` from the extraction call.
-    :param source: The catalog source the candidate came from, if any.
-    :param fallback_source_id: ``"sweep"`` or ``"board-tip"`` for non-catalog items.
-    :param access_method: e.g. ``"firecrawl"``, ``"newsletter"``, ``"board-tip"``.
-    :param tip: Board-tip lead: an editor flagged it, so the keyword and
-        title-matching gates step aside and the gate call must still name the
-        closest theme.
-    :param known_page: The item's page when a structured source already
-        carries it (arXiv): no liveness check and no scrape are needed.
-    :returns: ``(verified_findings, rejected_items)`` for this candidate.
+    :param candidates: The source's candidates.
+    :param source: The catalog source they came from, if any.
+    :param fallback_source_id: ``"sweep"``, ``"inbox"`` or ``"board-tip"`` for non-catalog items.
+    :param access_method: e.g. ``"direct"``, ``"firecrawl"``, ``"newsletter"``.
+    :param tip: Board tip: an editor flagged it, so triage and the title,
+        date and roundup checks step aside, and the verdict must name the
+        closest question.
+    :param triaged: The candidates already passed triage (the sweep triages its hits).
+    :param known_pages: Pages a structured source already carries (arXiv), by URL.
+    :returns: ``(verified_findings, rejected_items)``.
     """
     source_id = source.id if source else fallback_source_id
+    rejected: list[RejectedItem] = []
+    survivors: list[CandidateItem] = []
+
+    for candidate in candidates:
+        if reject := _pre_gate(candidate, source_id, window_start, window_end, prior):
+            rejected.append(reject)
+        else:
+            survivors.append(candidate)
+
+    if survivors and not (tip or triaged):
+        kept = await ctx.triage([(c.title, c.summary) for c in survivors], themes)
+        rejected.extend(
+            _reject(c, source_id, "off_theme", "triage: moves no watch question")
+            for i, c in enumerate(survivors)
+            if i not in kept
+        )
+        survivors = [c for i, c in enumerate(survivors) if i in kept]
+
+    verified: list[Finding] = []
+    for candidate in survivors:
+        finding, reject = await _verify_candidate(
+            ctx,
+            services,
+            candidate,
+            source,
+            window_start,
+            window_end,
+            themes,
+            source_id,
+            access_method,
+            tip,
+            (known_pages or {}).get(candidate.url),
+        )
+        if finding:
+            verified.append(finding)
+        if reject:
+            rejected.append(reject)
+
+    return verified, rejected
+
+
+async def _verify_candidate(
+    ctx: HarvestContext,
+    services: Services,
+    candidate: CandidateItem,
+    source: schemas.SourceEntry | None,
+    window_start: date,
+    window_end: date,
+    themes: list[schemas.ThemeDef],
+    source_id: str,
+    access_method: str,
+    tip: bool,
+    known_page: ScrapeResult | None,
+) -> tuple[Finding | None, RejectedItem | None]:
+    """Verify one triaged candidate: liveness, scrape, date, forward-looking verdict.
+
+    :param known_page: The item's page when a structured source already
+        carries it (arXiv): no liveness check and no scrape are needed.
+    :returns: ``(finding, None)`` when verified, ``(None, reject)`` otherwise.
+    """
     item_date = parse_iso_date(candidate.date) or parse_iso_date(candidate.summary)
 
-    if not window_gate(item_date, window_start, window_end):
-        days_out = _days_outside(item_date, window_start, window_end)
-        detail = f"near_window ({days_out}d outside) published {item_date.isoformat()}" if days_out <= 7 else ""
-        return [], [_reject(candidate, source_id, "out_of_window", detail)]
-
-    if duplicate_gate(candidate.url, prior):
-        return [], [_reject(candidate, source_id, "duplicate")]
-
-    # Cheap gates before paying for anything: a candidate whose text hits
-    # no theme keyword is off-theme without a scrape or a judgement call;
-    # a certainly-dead URL dies without a Firecrawl call.
-    all_keywords = [keyword for theme in themes for keyword in theme.keywords]
-    if not tip and keyword_hits(f"{candidate.title} {candidate.summary}", all_keywords) == 0:
-        return [], [_reject(candidate, source_id, "off_theme")]
     if known_page is None and http_url_is_dead(candidate.url):
-        return [], [_reject(candidate, source_id, "url_404")]
+        return None, _reject(candidate, source_id, "url_404")
 
     page = known_page or await services.crawl.scrape(candidate.url)
 
     if page is None:
-        return [], [_reject(candidate, source_id, "url_404")]
+        return None, _reject(candidate, source_id, "url_404")
 
     if item_date is None:
         item_date = parse_iso_date(page.published_at or "")
         if item_date and not window_gate(item_date, window_start, window_end):
             days_out = _days_outside(item_date, window_start, window_end)
             detail = f"near_window ({days_out}d outside) published {item_date.isoformat()}" if days_out <= 7 else ""
-            return [], [_reject(candidate, source_id, "out_of_window", detail)]
+            return None, _reject(candidate, source_id, "out_of_window", detail)
+
+    # An item with no date anywhere may be years old (an evergreen page, an
+    # archive link): it cannot be presented as this week's news.
+    if item_date is None and not tip:
+        return None, _reject(candidate, source_id, "undated", "no date in the source, the text or the page")
 
     verdict = await ctx.gate_candidate(candidate.title, candidate.summary, page.title, themes, tip=tip)
 
     if not verdict.title_matches and not tip:
-        return [], [_reject(candidate, source_id, "title_mismatch", verdict.title_detail)]
+        return None, _reject(candidate, source_id, "title_mismatch", verdict.title_detail)
 
-    if not verdict.theme_ids:
-        return [], [_reject(candidate, source_id, "off_theme")]
+    if verdict.is_roundup and not tip:
+        return None, _reject(candidate, source_id, "roundup", "a digest of many items, not one development")
 
-    # Trust the judgement call's assignment — it sees every theme definition
-    # and keyword and understands the text; a literal keyword-subset check
-    # here would veto correct semantic assignments.
     theme_ids = [theme_id for theme_id in verdict.theme_ids if theme_id in {t.theme for t in themes}]
+    if not theme_ids and not tip:
+        return None, _reject(candidate, source_id, "off_theme")
 
-    finding = Finding(
-        id="",
-        date=item_date or window_end,
-        title=candidate.title,
-        url=page.url or candidate.url,
-        source_id=source_id,
-        region=source.region if source else "global",
-        tier=cap_tier(verdict.tier, source.tier if source else 4),
-        theme_ids=theme_ids,
-        datapoint=verdict.datapoint or candidate.datapoint,
-        summary=verdict.summary or candidate.summary or verdict.title_detail,
-        significance=verdict.significance,
-        access_method=access_method,
+    return (
+        Finding(
+            id="",
+            date=item_date or window_end,
+            title=candidate.title,
+            url=page.url or candidate.url,
+            source_id=source_id,
+            region=source.region if source else "global",
+            tier=cap_tier(verdict.tier, source.tier if source else 4),
+            theme_ids=theme_ids,
+            datapoint=verdict.datapoint or candidate.datapoint,
+            summary=verdict.summary or candidate.summary or verdict.title_detail,
+            significance=verdict.significance,
+            access_method=access_method,
+            direction=verdict.direction,
+            horizon=verdict.horizon,
+            forward_note=verdict.forward_note,
+        ),
+        None,
     )
 
-    return [finding], []
+
+def _dated_by_message(candidate: CandidateItem, message: Any) -> CandidateItem:
+    """Date an undated newsletter item by its message: the email itself is in-window evidence.
+
+    :param candidate: The candidate extracted from the message.
+    :param message: The inbox message it came from.
+    :returns: The candidate, dated when it had no date.
+    """
+    stamp = getattr(message, "timestamp", None) or getattr(message, "created_at", None)
+    if candidate.date or stamp is None:
+        return candidate
+    return candidate.model_copy(update={"date": stamp.date().isoformat()})
 
 
 _FEED_MARKUP = re.compile(r"<[^>]+>")
@@ -312,15 +408,9 @@ async def harvest_feed_source(
     if oldest is not None and oldest > window_start and not snapshot:
         flags.append("feed_truncated")
 
-    verified: list[Finding] = []
-    rejected: list[RejectedItem] = []
-
-    for candidate in candidates:
-        findings, rejects = await _gate_candidate(
-            ctx, services, candidate, source, window_start, window_end, prior, themes, source.id, "direct"
-        )
-        verified.extend(findings)
-        rejected.extend(rejects)
+    verified, rejected = await _gate_candidates(
+        ctx, services, candidates, source, window_start, window_end, prior, themes, source.id, "direct"
+    )
 
     return (
         verified,
@@ -438,25 +528,20 @@ async def harvest_arxiv_source(
             break
         await asyncio.sleep(3)  # arXiv API etiquette: one request every three seconds
 
-    verified: list[Finding] = []
-    rejected: list[RejectedItem] = []
-    for candidate in candidates:
-        known = ScrapeResult(url=candidate.url, title=candidate.title, markdown=candidate.summary)
-        findings, rejects = await _gate_candidate(
-            ctx,
-            services,
-            candidate,
-            source,
-            window_start,
-            window_end,
-            prior,
-            themes,
-            source.id,
-            "direct",
-            known_page=known,
-        )
-        verified.extend(findings)
-        rejected.extend(rejects)
+    known = {c.url: ScrapeResult(url=c.url, title=c.title, markdown=c.summary) for c in candidates}
+    verified, rejected = await _gate_candidates(
+        ctx,
+        services,
+        candidates,
+        source,
+        window_start,
+        window_end,
+        prior,
+        themes,
+        source.id,
+        "direct",
+        known_pages=known,
+    )
 
     return (
         verified,
@@ -509,15 +594,9 @@ async def harvest_web_source(
         return [], [], SourceOutcome(source_id=source.id, status="failed", detail=f"scrape failed: {source.url}")
 
     candidates = (await ctx.extract_candidates(page.markdown)).items
-    verified: list[Finding] = []
-    rejected: list[RejectedItem] = []
-
-    for candidate in candidates:
-        findings, rejects = await _gate_candidate(
-            ctx, services, candidate, source, window_start, window_end, prior, themes, "sweep", "firecrawl"
-        )
-        verified.extend(findings)
-        rejected.extend(rejects)
+    verified, rejected = await _gate_candidates(
+        ctx, services, candidates, source, window_start, window_end, prior, themes, source.id, "firecrawl"
+    )
 
     return (
         verified,
@@ -566,7 +645,7 @@ async def harvest_newsletter_source(
     if not inbox:
         return [], [], SourceOutcome(source_id=source.id, status="failed", detail="harvest inbox not configured")
 
-    verified: list[Finding] = []
+    candidates: list[CandidateItem] = []
     rejected: list[RejectedItem] = []
     for message in messages:
         body = await services.mail.get_message_text(inbox, message.message_id)
@@ -577,12 +656,12 @@ async def harvest_newsletter_source(
             resolved_url = candidate.url
             if page := await services.crawl.scrape(candidate.url):
                 resolved_url = page.url or candidate.url
-            candidate = candidate.model_copy(update={"url": resolved_url})
-            findings, rejects = await _gate_candidate(
-                ctx, services, candidate, source, window_start, window_end, prior, themes, "sweep", "newsletter"
-            )
-            verified.extend(findings)
-            rejected.extend(rejects)
+            candidates.append(_dated_by_message(candidate.model_copy(update={"url": resolved_url}), message))
+
+    verified, gated_rejects = await _gate_candidates(
+        ctx, services, candidates, source, window_start, window_end, prior, themes, source.id, "newsletter"
+    )
+    rejected.extend(gated_rejects)
 
     return (
         verified,
@@ -622,16 +701,14 @@ async def harvest_inbox_unattributed(
     :param themes: The watched themes.
     :returns: ``(findings, rejected, outcome)`` for the inbox fallback.
     """
-    verified: list[Finding] = []
-    rejected: list[RejectedItem] = []
+    candidates: list[CandidateItem] = []
     for message in messages:
         body = message.text or (await _fetch_body(services, message))
-        for candidate in (await ctx.extract_candidates(body)).items:
-            findings, rejects = await _gate_candidate(
-                ctx, services, candidate, None, window_start, window_end, prior, themes, "inbox", "newsletter"
-            )
-            verified.extend(findings)
-            rejected.extend(rejects)
+        candidates.extend(_dated_by_message(c, message) for c in (await ctx.extract_candidates(body)).items)
+
+    verified, rejected = await _gate_candidates(
+        ctx, services, candidates, None, window_start, window_end, prior, themes, "inbox", "newsletter"
+    )
     return (
         verified,
         rejected,
@@ -738,8 +815,18 @@ async def harvest_board_tips(
             candidates[0] if candidates else CandidateItem(title=message.subject, url=page.url if page else links[0])
         )
         candidate = candidate.model_copy(update={"url": page.url if page else links[0]})
-        findings, rejects = await _gate_candidate(
-            ctx, services, candidate, None, window_start, window_end, prior, themes, "board-tip", "board-tip", tip=True
+        findings, rejects = await _gate_candidates(
+            ctx,
+            services,
+            [candidate],
+            None,
+            window_start,
+            window_end,
+            prior,
+            themes,
+            "board-tip",
+            "board-tip",
+            tip=True,
         )
         for reject in rejects:
             reject.detail = f"board tip from {_display_sender(sender)}" + (
@@ -788,9 +875,9 @@ async def harvest_sweep(
     """Run the general sweep: one web search per theme, gated as usual.
 
     Catches developments from sources not yet in the catalog. Each search is
-    bounded to the harvest window by a date range; hits that miss every theme
-    keyword are skipped as search noise, everything else goes through the
-    full verification gate with ``source_id: "sweep"``.
+    bounded to the harvest window by a date range; hits are triaged before
+    any scrape, and what survives goes through the full verification gate
+    with ``source_id: "sweep"``.
 
     :param ctx: The harvest context holding the LLM runners.
     :param services: The wired service clients.
@@ -803,32 +890,39 @@ async def harvest_sweep(
     if services.crawl is None:
         return [], [], SourceOutcome(source_id="sweep", status="failed", detail="crawl service not configured")
 
-    keywords = [kw for theme in themes for kw in theme.keywords]
     verified: list[Finding] = []
     rejected: list[RejectedItem] = []
+    seen: set[str] = set()
 
     for theme in themes:
-        query = theme.sweep_query or ", ".join(theme.keywords[:6])
-        hits = await services.crawl.search(query, limit=5, since=window_start, until=window_end)
+        query = theme.sweep_query or theme.question
+        hits = [
+            hit
+            for hit in await services.crawl.search(query, limit=5, since=window_start, until=window_end)
+            if normalize_url(hit.url) not in seen
+        ]
+        seen.update(normalize_url(hit.url) for hit in hits)
+        if not hits:
+            continue
 
-        for hit in hits:
-            if hit.url in {f.url for f in verified} or keyword_hits(f"{hit.title} {hit.description}", keywords) == 0:
-                continue  # search noise, not a candidate
-
+        # Triage the hits before paying to scrape them: search noise dies here.
+        kept = await ctx.triage([(hit.title, hit.description) for hit in hits], themes)
+        candidates: list[CandidateItem] = []
+        for i, hit in enumerate(hits):
+            if i not in kept:
+                continue
             page = await services.crawl.scrape(hit.url)
-
             if page is not None and page.markdown:
-                candidates = (await ctx.extract_candidates(page.markdown)).items
+                extracted = (await ctx.extract_candidates(page.markdown)).items
             else:
-                candidates = [CandidateItem(title=hit.title, url=hit.url, summary=hit.description)]
+                extracted = [CandidateItem(title=hit.title, url=hit.url, summary=hit.description)]
+            candidates.extend(c.model_copy(update={"url": c.url or hit.url}) for c in extracted)
 
-            for candidate in candidates:
-                candidate = candidate.model_copy(update={"url": candidate.url or hit.url})
-                findings, rejects = await _gate_candidate(
-                    ctx, services, candidate, None, window_start, window_end, prior, themes, "sweep", "sweep"
-                )
-                verified.extend(findings)
-                rejected.extend(rejects)
+        findings, rejects = await _gate_candidates(
+            ctx, services, candidates, None, window_start, window_end, prior, themes, "sweep", "sweep", triaged=True
+        )
+        verified.extend(findings)
+        rejected.extend(rejects)
     return (
         verified,
         rejected,

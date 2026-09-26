@@ -149,17 +149,22 @@ class TestSourceEntry:
 
 
 class TestThemeDef:
-    def test_parses_theme_fields(self):
+    def test_question_with_optional_hints(self):
         theme = ThemeDef.model_validate(
             {
-                "theme": "physical-ai",
-                "chapter": "technology-roadmap",
-                "definition": "AI systems that interact with the physical world.",
-                "keywords": ["embodied AI", "robotics"],
+                "theme": "efficient-ai",
+                "question": "Is the science-of-AI path delivering?",
+                "why": "Smaller models keep Europe in the race.",
+                "look_for": ["densing law", "small reasoning models"],
             }
         )
 
-        assert theme.keywords == ["embodied AI", "robotics"]
+        assert theme.keywords == []
+        assert theme.brief() == (
+            "- efficient-ai: Is the science-of-AI path delivering? "
+            "Why it matters: Smaller models keep Europe in the race. "
+            "Look for: densing law, small reasoning models"
+        )
 
 
 class TestSourceCatalog:

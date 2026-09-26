@@ -41,6 +41,8 @@ class FakeLLM:
         if getattr(schema, "__name__", "") == "InBrief":
             return schema(text="In brief text.")
         handler = self.handlers.get(schema)
+        if handler is None and getattr(schema, "__name__", "") == "TriageVerdict":
+            return schema(items=[])  # keep everything unless a test scripts triage
         if handler is None:
             raise AssertionError(f"no scripted handler for {schema.__name__}")
         return handler(prompt) if callable(handler) else handler

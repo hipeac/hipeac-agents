@@ -227,8 +227,7 @@ class TestConfig:
     def test_operator_copy_overrides(self, data_dir):
         config = workspace.workspace_root(data_dir) / "config" / "themes.yaml"
         config.write_text(
-            "themes:\n  - theme: custom\n    chapter: future-ahead\n"
-            "    definition: Custom theme.\n    keywords: [custom]\n",
+            "themes:\n  - theme: custom\n    question: Custom question?\n",
             encoding="utf-8",
         )
 

@@ -10,23 +10,18 @@ from hipeac_agents.agents.vision_watch import workspace
 THEMES_YAML = """\
 themes:
   - theme: next-computing-paradigm
-    chapter: future-ahead
-    definition: >
-      The evolution toward distributed, on-demand computing across the
-      compute continuum.
+    question: Is the federated, on-demand compute continuum emerging?
+    why: Personal AI orchestrators need it.
+    look_for: [edge orchestration, live migration]
     keywords: [digital envelopes, compute continuum, personal AI]
 
   - theme: physical-ai
-    chapter: technology-roadmap
-    definition: >
-      AI systems that directly interact with the physical world through
-      sensors, actuators, and robotic systems.
+    question: Are AI agents entering the physical world safely?
+    look_for: [humanoid deployments, VLA models]
     keywords: [embodied AI, robotics, humanoids, self-driving]
 
   - theme: agentic-ai
-    chapter: technology-roadmap
-    definition: >
-      Autonomous AI systems acting as agents with delegated authority.
+    question: Is a frontier capability gap opening or closing?
     keywords: [agents, MCP, A2A, agent communication protocols]
 """
 

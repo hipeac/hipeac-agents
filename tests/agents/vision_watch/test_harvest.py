@@ -108,19 +108,6 @@ class TestDuplicateGate:
         assert harvest.duplicate_gate("https://example.com/new", prior) is False
 
 
-class TestKeywordHits:
-    @pytest.mark.parametrize(
-        ("text", "expected"),
-        [
-            ("Humanoids move into industrial deployment", 1),
-            ("RISC-V enters the ISO track", 0),
-            ("embodied AI and robotics converge", 1),
-        ],
-    )
-    def test_hits(self, text, expected):
-        assert harvest.keyword_hits(text, ["humanoids", "robotics"]) == expected
-
-
 class TestCapTier:
     @pytest.mark.parametrize(
         ("item_tier", "catalog_tier", "expected"),
@@ -271,9 +258,7 @@ class TestGateCandidateSummary:
         return ThemeDef.model_validate(
             {
                 "theme": "cybersecurity",
-                "chapter": "technology-roadmap",
-                "definition": "Security of computing systems.",
-                "keywords": ["security"],
+                "question": "Is AI shifting the balance between cyber offence and defence?",
             }
         )
 
@@ -289,7 +274,7 @@ class TestGateCandidateSummary:
         )
 
     async def test_verdict_one_liner_preferred_over_raw_summary(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import _gate_candidate
+        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import _gate_candidates
         from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
         from hipeac_agents.agents.vision_watch.nodes.harvest.models import GateVerdict
         from tests.agents.vision_watch._fakes import FakeCrawl, FakeLLM
@@ -302,10 +287,10 @@ class TestGateCandidateSummary:
 
         from hipeac_agents.services.factory import Services
 
-        findings, _ = await _gate_candidate(
+        findings, _ = await _gate_candidates(
             ctx,
             Services(crawl=crawl, mail=None, vision=None),
-            self._candidate(raw),
+            [self._candidate(raw)],
             None,
             date(2026, 6, 6),
             date(2026, 6, 12),
@@ -318,7 +303,7 @@ class TestGateCandidateSummary:
         assert findings[0].summary == one_liner
 
     async def test_raw_summary_falls_back_when_verdict_skips_it(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import _gate_candidate
+        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import _gate_candidates
         from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
         from hipeac_agents.agents.vision_watch.nodes.harvest.models import GateVerdict
         from tests.agents.vision_watch._fakes import FakeCrawl, FakeLLM
@@ -330,10 +315,10 @@ class TestGateCandidateSummary:
 
         from hipeac_agents.services.factory import Services
 
-        findings, _ = await _gate_candidate(
+        findings, _ = await _gate_candidates(
             ctx,
             Services(crawl=crawl, mail=None, vision=None),
-            self._candidate(raw),
+            [self._candidate(raw)],
             None,
             date(2026, 6, 6),
             date(2026, 6, 12),
@@ -352,9 +337,7 @@ class TestBoardTips:
     THEMES = [
         {
             "theme": "physical-ai",
-            "chapter": "technology-roadmap",
-            "definition": "AI systems that interact with the physical world.",
-            "keywords": ["embodied AI", "robotics"],
+            "question": "Are AI agents entering the physical world safely?",
         }
     ]
 
