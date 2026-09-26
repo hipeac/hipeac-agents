@@ -12,8 +12,10 @@ the headline as possible), its URL (the primary URL for that item, not the
 listing page), an ISO date if present, a one-sentence summary, and any notable
 figure as the datapoint (e.g. "$900M acquisition"). Listings that aggregate
 many developments yield many items; a single-article page yields one. Extract
-at most 5 items — the most significant developments on the page. Return only
-what the content actually contains — never invent items or URLs.
+at most 10 items — the NEWEST dated developments on the page, not the most
+prominent: featured or pinned stories are often old. Always include the date
+when the page shows one. Return only what the content actually contains —
+never invent items or URLs.
 """
 
 GATE = """\
