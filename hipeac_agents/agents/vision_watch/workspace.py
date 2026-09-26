@@ -25,8 +25,9 @@ The workspace rules are enforced as code, not convention:
    no such field is ever stored.
 """
 
+import json
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import yaml
@@ -475,6 +476,56 @@ def read_latest_weekly_digest(data_dir: str | None = None) -> str | None:
     return digests[-1].read_text(encoding="utf-8") if digests else None
 
 
+def _sent_marker(digest_path: Path) -> Path:
+    return digest_path.with_suffix(".sent.json")
+
+
+def weekly_digest_sent(week: str, data_dir: str | None = None) -> bool:
+    """Check whether a week's digest was already emailed.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: ``True`` once the digest has a sent marker.
+    """
+    return _sent_marker(weekly_digest_dir(data_dir) / digest_filename(week)).exists()
+
+
+def mark_weekly_digest_sent(week: str, message_id: str, data_dir: str | None = None) -> Path:
+    """Record that a week's digest was emailed (write-once: a digest is sent once).
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param message_id: The provider's id for the sent message.
+    :param data_dir: Optional workspace-root override.
+    :returns: The marker path.
+    :raises WorkspaceError: If the digest was already marked sent.
+    """
+    marker = _sent_marker(weekly_digest_dir(data_dir) / digest_filename(week))
+    return write_once(marker, json.dumps({"sent_at": datetime.now(UTC).isoformat(), "message_id": message_id}))
+
+
+def monthly_digest_sent(month: str, data_dir: str | None = None) -> bool:
+    """Check whether a month's digest was already emailed.
+
+    :param month: A calendar month as ``"2026-07"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: ``True`` once the digest has a sent marker.
+    """
+    return _sent_marker(monthly_digest_dir(data_dir) / monthly_digest_filename(month)).exists()
+
+
+def mark_monthly_digest_sent(month: str, message_id: str, data_dir: str | None = None) -> Path:
+    """Record that a month's digest was emailed (write-once).
+
+    :param month: A calendar month as ``"2026-07"``.
+    :param message_id: The provider's id for the sent message.
+    :param data_dir: Optional workspace-root override.
+    :returns: The marker path.
+    :raises WorkspaceError: If the digest was already marked sent.
+    """
+    marker = _sent_marker(monthly_digest_dir(data_dir) / monthly_digest_filename(month))
+    return write_once(marker, json.dumps({"sent_at": datetime.now(UTC).isoformat(), "message_id": message_id}))
+
+
 def write_monthly_digest(month: str, markdown: str, data_dir: str | None = None) -> Path:
     """Write the monthly synthesis digest (write-once).
 
@@ -575,6 +626,9 @@ __all__ = [
     "findings_path",
     "grouping_path",
     "list_weeks",
+    "mark_monthly_digest_sent",
+    "mark_weekly_digest_sent",
+    "monthly_digest_sent",
     "monthly_digest_dir",
     "monthly_digest_filename",
     "read_all_findings",
@@ -590,6 +644,7 @@ __all__ = [
     "read_themes",
     "rejected_path",
     "weekly_digest_dir",
+    "weekly_digest_sent",
     "weekly_label",
     "week_dir",
     "workspace_root",

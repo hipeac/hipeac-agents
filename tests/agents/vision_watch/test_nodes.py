@@ -670,14 +670,16 @@ class TestDigestNode:
         assert not mail.sent
         assert (workspace.weekly_digest_dir() / "digest-2026-W24.md").exists()
 
-    async def test_already_composed_week_is_not_recomposed_or_resent(self, llm, monkeypatch):
+    async def test_already_sent_week_is_not_recomposed_or_resent(self, llm, monkeypatch):
         """Regression: the digest is write-once, so a re-run used to pay for
-        every prose call and then raise on the write. It now replays."""
+        every prose call and then raise on the write. It now replays, and a
+        digest already sent is never sent again."""
         monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
         monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
         workspace.write_weekly_digest("2026-W24", "# Already composed\n")
+        workspace.mark_weekly_digest_sent("2026-W24", "m-earlier")
         mail = FakeMail()
         llm.calls.clear()
 
@@ -691,6 +693,41 @@ class TestDigestNode:
         assert updates["digest_sent"] is False
         assert not mail.sent
         assert not llm.calls, "a recorded week must cost no LLM calls"
+
+    async def test_composed_digest_is_sendable_later_exactly_once(self, llm, monkeypatch):
+        """Regression (baseline B1): with sending opt-in, compose → review →
+        ``--send`` silently mailed no one, because the recorded-digest replay
+        returned before the send step."""
+        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
+        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
+            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
+        )
+        mail = FakeMail()
+        services = Services(crawl=None, mail=mail, vision=None)
+
+        composed = await digest_node_mod.digest_node(
+            VisionWatchState.model_construct(week="2026-W24", send=False), services=services, llm=llm
+        )
+        assert not mail.sent
+        llm.calls.clear()
+
+        sent = await digest_node_mod.digest_node(
+            VisionWatchState.model_construct(week="2026-W24", send=True), services=services, llm=llm
+        )
+        again = await digest_node_mod.digest_node(
+            VisionWatchState.model_construct(week="2026-W24", send=True), services=services, llm=llm
+        )
+
+        assert sent["digest_sent"] is True
+        assert again["digest_sent"] is False
+        assert len(mail.sent) == 1
+        assert mail.sent[0][3] == composed["digest_markdown"]
+        assert mail.sent[0][2] == "HiPEAC Vision Watch — Week 2026-W24: Humanoids"
+        assert not llm.calls, "sending a recorded digest must cost no LLM calls"
+        assert workspace.weekly_digest_sent("2026-W24")
 
     async def test_lead_prefers_this_weeks_tier_over_lifetime_volume(self, llm):
         """Regression: the lead used to be picked by lifetime entry count, so a

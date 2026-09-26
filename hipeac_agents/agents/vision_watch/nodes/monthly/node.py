@@ -285,10 +285,11 @@ async def monthly_node(
 
     # Preflight: the monthly digest is write-once, so synthesising a month
     # that already has one would pay for every prose call and then raise on
-    # the write. A digest composed once is also a digest sent once.
+    # the write. A recorded digest is still sendable once.
     if recorded := workspace.read_monthly_digest(month):
-        logger.info("month %s already has a digest; skipping synthesis and send", month)
-        return {"digest_markdown": recorded, "digest_sent": False}
+        logger.info("month %s already has a digest; skipping synthesis", month)
+        sent = await _send(services, state, month, recorded, _recorded_bottom_line(recorded))
+        return {"digest_markdown": recorded, "digest_sent": sent}
 
     themes = [theme.theme for theme in workspace.read_themes()]
     weeks = month_weeks(month)
@@ -351,22 +352,49 @@ async def monthly_node(
     markdown = compose_monthly_markdown(month, themes, cluster_data, prose, bottom_line.text.strip())
     workspace.write_monthly_digest(month, markdown)
 
-    sent = False
+    sent = await _send(services, state, month, markdown, bottom_line.text)
+    return {"digest_markdown": markdown, "digest_sent": sent}
+
+
+def _recorded_bottom_line(markdown: str) -> str:
+    """Recover the Bottom line text from a recorded monthly digest.
+
+    :param markdown: The recorded digest.
+    :returns: The first paragraph under "## Bottom line", or ``""``.
+    """
+    _, _, after = markdown.partition("## Bottom line")
+    return next((block.strip() for block in after.split("\n\n") if block.strip()), "")
+
+
+async def _send(services: Services, state: Any, month: str, markdown: str, bottom_line: str) -> bool:
+    """Email a month's digest to the board, at most once and only with ``--send``.
+
+    :param services: The wired services (mail).
+    :param state: The graph state; carries the ``send`` opt-in.
+    :param month: The calendar month as ``"YYYY-MM"``.
+    :param markdown: The digest markdown.
+    :param bottom_line: The Bottom line text; its first 100 characters are the subject.
+    :returns: ``True`` when the digest was sent by this run.
+    """
     recipient = watch_settings.HIPEAC_VISION_BOARD_EMAIL
     inbox = watch_settings.AGENTMAIL_INBOX_VISION_WATCH
 
-    if services.mail is not None and inbox and recipient and state.send:
-        await services.mail.send(
-            inbox,
-            recipient,
-            subject=bottom_line.text[:100],
-            text=markdown,
-            html=markdown_to_html(markdown),
-            reply_to=watch_settings.HIPEAC_VISION_REPLY_TO,
-        )
-        sent = True
+    if not (state.send and services.mail is not None and inbox and recipient):
+        return False
+    if workspace.monthly_digest_sent(month):
+        logger.info("month %s digest was already sent; not sending again", month)
+        return False
 
-    return {"digest_markdown": markdown, "digest_sent": sent}
+    message_id = await services.mail.send(
+        inbox,
+        recipient,
+        subject=bottom_line[:100],
+        text=markdown,
+        html=markdown_to_html(markdown),
+        reply_to=watch_settings.HIPEAC_VISION_REPLY_TO,
+    )
+    workspace.mark_monthly_digest_sent(month, message_id)
+    return True
 
 
 async def _trend_prose(llm: Any, context: str) -> TrendProse:

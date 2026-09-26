@@ -298,11 +298,15 @@ async def digest_node(
     week = state.week
 
     # Preflight: the digest is write-once, so composing a week that already
-    # has one would pay for every prose call and then raise on the write.
-    # A digest composed once is also a digest sent once — no re-send here.
+    # has one would pay for every prose call and then raise on the write. A
+    # recorded digest is still sendable once — compose, review, then --send.
     if recorded := workspace.read_weekly_digest(week):
-        logger.info("week %s already has a digest; skipping composition and send", week)
-        return {"digest_markdown": recorded, "digest_sent": False}
+        logger.info("week %s already has a digest; skipping composition", week)
+        themes = [theme.theme for theme in workspace.read_themes()]
+        touched = {cid: data for cid, data in _collect_clusters(week, themes).items() if data["this_week"]}
+        lead = _lead_cluster(touched, week, _catalog())
+        sent = await _send(services, state, week, recorded, lead[1]["cluster"].name if lead else None)
+        return {"digest_markdown": recorded, "digest_sent": sent}
 
     theme_defs = workspace.read_themes()
     themes = [theme.theme for theme in theme_defs]
@@ -348,24 +352,39 @@ async def digest_node(
     markdown = compose_digest_markdown(week, themes, cluster_data, prose, in_brief.text.strip(), signal_groups)
     workspace.write_weekly_digest(week, markdown)
 
-    sent = False
+    sent = await _send(services, state, week, markdown, lead[1]["cluster"].name if lead is not None else None)
+    return {"digest_markdown": markdown, "digest_sent": sent}
+
+
+async def _send(services: Services, state: VisionWatchState, week: str, markdown: str, lead_name: str | None) -> bool:
+    """Email a week's digest to the board, at most once and only with ``--send``.
+
+    :param services: The wired services (mail).
+    :param state: The graph state; carries the ``send`` opt-in.
+    :param week: The week label.
+    :param markdown: The digest markdown.
+    :param lead_name: The lead cluster's name, for the subject; ``None`` on a quiet week.
+    :returns: ``True`` when the digest was sent by this run.
+    """
     recipient = watch_settings.HIPEAC_VISION_BOARD_EMAIL
     inbox = watch_settings.AGENTMAIL_INBOX_VISION_WATCH
-    lead_name = lead[1]["cluster"].name if lead is not None else "Quiet week"
-    subject = f"HiPEAC Vision Watch — Week {week}: {lead_name}"
 
-    if services.mail is not None and inbox and recipient and state.send:
-        await services.mail.send(
-            inbox,
-            recipient,
-            subject=subject,
-            text=markdown,
-            html=markdown_to_html(markdown),
-            reply_to=watch_settings.HIPEAC_VISION_REPLY_TO,
-        )
-        sent = True
+    if not (state.send and services.mail is not None and inbox and recipient):
+        return False
+    if workspace.weekly_digest_sent(week):
+        logger.info("week %s digest was already sent; not sending again", week)
+        return False
 
-    return {"digest_markdown": markdown, "digest_sent": sent}
+    message_id = await services.mail.send(
+        inbox,
+        recipient,
+        subject=f"HiPEAC Vision Watch — Week {week}: {lead_name or 'Quiet week'}",
+        text=markdown,
+        html=markdown_to_html(markdown),
+        reply_to=watch_settings.HIPEAC_VISION_REPLY_TO,
+    )
+    workspace.mark_weekly_digest_sent(week, message_id)
+    return True
 
 
 def _catalog():
