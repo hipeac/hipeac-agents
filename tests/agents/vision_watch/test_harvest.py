@@ -258,7 +258,7 @@ class TestGateCandidateSummary:
         return ThemeDef.model_validate(
             {
                 "theme": "cybersecurity",
-                "question": "Is AI shifting the balance between cyber offence and defence?",
+                "description": "Security of computing systems against AI-scale threats.",
             }
         )
 
@@ -337,7 +337,7 @@ class TestBoardTips:
     THEMES = [
         {
             "theme": "physical-ai",
-            "question": "Are AI agents entering the physical world safely?",
+            "description": "AI that senses and acts in the physical world.",
         }
     ]
 

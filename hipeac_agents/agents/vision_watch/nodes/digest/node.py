@@ -147,13 +147,13 @@ def compose_digest_markdown(
 
     Sections: In brief; One big thing (the week's lead cluster, full item
     anatomy); What's brewing (long-horizon items and weak signals); What
-    moved on each question (every cluster touched this week, one line each,
+    moved in each theme (every cluster touched this week, one line each,
     tagged by direction); Board tips; Also worth watching (off-theme rejects
     grouped into a shared signal); Trending this week (standing evidence
     weight, ranked).
 
     :param week: The week label.
-    :param themes: The watch questions, in digest order.
+    :param themes: The themes, in digest order.
     :param cluster_data: Cluster id to ``{theme, cluster, entries, this_week}``.
     :param prose: Cluster id to the lead cluster's prose, when generated.
     :param in_brief: The In brief text.
@@ -212,10 +212,10 @@ def compose_digest_markdown(
             lines.append(f"- _{finding.summary}_{note} — [{display_domain(finding.url)}]({finding.url}){horizon}")
         lines.append("")
 
-    lines.extend(["## What moved on each question", ""])
+    lines.extend(["## What moved in each theme", ""])
 
     for theme in themes:
-        heading = f"### {theme.theme} — {theme.question}"
+        heading = f"### {theme.theme}"
         theme_clusters = [(cid, data) for cid, data in touched.items() if data["theme"] == theme.theme]
 
         if not theme_clusters:

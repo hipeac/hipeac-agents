@@ -67,14 +67,14 @@ class HarvestContext:
         return await self._invoke(CandidateList, prompt)
 
     async def triage(self, items: list[tuple[str, str]], themes: list[schemas.ThemeDef]) -> set[int]:
-        """Decide which candidates could move a watch question, in batches.
+        """Decide which candidates could be a signal for a theme, in batches.
 
         LLM judgement call (triage) — see ``prompts.TRIAGE``. A candidate the
         model leaves out of its answer is kept: dropping is the decision that
         must be explicit.
 
         :param items: ``(title, summary)`` per candidate.
-        :param themes: The watch questions.
+        :param themes: The themes.
         :returns: The indices of the candidates to keep.
         """
         questions = "\n".join(t.brief() for t in themes)
@@ -84,7 +84,7 @@ class HarvestContext:
             lines = "\n".join(f"{i}. {title} — {summary[:300]}" for i, (title, summary) in enumerate(batch))
             verdict = await self._invoke(
                 TriageVerdict,
-                prompts.TRIAGE + f"\n\nWatch questions:\n{questions}\n\nCandidates:\n{lines}",
+                prompts.TRIAGE + f"\n\nThemes:\n{questions}\n\nCandidates:\n{lines}",
             )
             dropped = {item.index for item in verdict.items if not item.keep}
             kept.update(offset + i for i in range(len(batch)) if i not in dropped)
@@ -111,9 +111,9 @@ class HarvestContext:
         questions = "\n".join(t.brief() for t in themes)
 
         tip_suffix = (
-            "\n\nThis candidate is a board tip a human editor flagged. If it moves no "
-            "watch question, still return the single closest question id in theme_ids: "
-            "a tip is never off-theme."
+            "\n\nThis candidate is a board tip a human editor flagged. If it fits no "
+            "theme, still return the single closest theme id in theme_ids: a tip is "
+            "never off-theme."
             if tip
             else ""
         )
@@ -121,7 +121,7 @@ class HarvestContext:
         return await self._invoke(
             GateVerdict,
             prompts.GATE
-            + f"\n\nWatch questions:\n{questions}"
+            + f"\n\nThemes:\n{questions}"
             + f"\n\nClaimed headline: {item_title}\nClaimed summary: {item_summary}\nActual page title: {page_title}"
             + tip_suffix,
         )

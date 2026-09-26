@@ -174,4 +174,4 @@ class TestSweep:
 
         assert "https://example.com/hit1" not in crawl.scrape_calls
         assert [f.url for f in findings] == ["https://example.com/hit0"]
-        assert crawl.search_calls == [themes[0].sweep_query or themes[0].question]
+        assert crawl.search_calls == [themes[0].sweep_query or themes[0].description]

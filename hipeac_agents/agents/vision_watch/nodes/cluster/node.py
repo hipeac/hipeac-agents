@@ -28,7 +28,7 @@ async def _group_findings(
     LLM judgement call (grouping bar) — see ``prompts.GROUPING_BAR``.
 
     :param llm: The chat model.
-    :param themes: The watch questions.
+    :param themes: The themes.
     :param cluster_index: Cluster id to ``(theme, cluster)`` across all themes.
     :param findings: The week's findings.
     :returns: The grouping plan.

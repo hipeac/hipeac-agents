@@ -149,7 +149,7 @@ async def replay_week(
 
     :param ctx: The harvest context holding the LLM runners.
     :param week: The week label.
-    :param themes: The watch questions.
+    :param themes: The themes.
     :param catalog: The source catalog.
     :returns: ``(new findings, new rejected, the replayed candidates)``.
     """
@@ -207,12 +207,12 @@ def render_report(
     """Render the review report: what the new gate keeps that the old one dropped, and the reverse.
 
     :param results: Per week: its label, the new findings, and the replayed candidates.
-    :param themes: The watch questions.
+    :param themes: The themes.
     :param calls: The planned call counts.
     :returns: The report markdown.
     """
     lines = ["# replay-gate report", "", f"Planned calls: {calls}", ""]
-    per_question: dict[str, int] = {t.theme: 0 for t in themes}
+    per_theme: dict[str, int] = {t.theme: 0 for t in themes}
     total_new = total_dropped = 0
     body: list[str] = []
 
@@ -227,7 +227,7 @@ def render_report(
         dropped = [c for c in old_findings if normalize_url(c.candidate.url) not in new_urls]
         for f in findings_file.findings:
             for theme_id in f.theme_ids:
-                per_question[theme_id] = per_question.get(theme_id, 0) + 1
+                per_theme[theme_id] = per_theme.get(theme_id, 0) + 1
         total_new += len(gained)
         total_dropped += len(dropped)
 
@@ -250,7 +250,7 @@ def render_report(
         [
             f"Across {len(results)} weeks: +{total_new} findings gained, -{total_dropped} dropped.",
             "",
-            "Findings per watch question: " + ", ".join(f"{k} {v}" for k, v in per_question.items()),
+            "Findings per theme: " + ", ".join(f"{k} {v}" for k, v in per_theme.items()),
             "",
         ]
     )

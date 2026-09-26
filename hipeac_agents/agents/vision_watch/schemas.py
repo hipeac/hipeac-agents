@@ -158,30 +158,32 @@ class ClusterLog(BaseModel):
 
 
 class ThemeDef(BaseModel):
-    """A watch question from the human-owned ``config/themes.yaml``.
+    """A Vision line (theme) from the human-owned ``config/themes.yaml``.
 
-    Each theme is framed as an open question the next Vision must answer;
-    an item is relevant when it moves that question. ``look_for`` names
-    real-world indicators (programmes, companies, products), since news
-    never uses the Vision's own vocabulary; ``keywords`` are optional hints.
+    Themes are the broad lines of the HiPEAC Vision; the watch collects the
+    signals inside them. ``description`` says in plain words what the line
+    covers, ``questions`` are the open questions the next Vision asks in it,
+    ``look_for`` names real-world indicators (programmes, companies,
+    products) since news never uses the Vision's own vocabulary, and
+    ``keywords`` are optional hints.
     """
 
     theme: str
-    question: str
-    why: str = ""
+    description: str
+    questions: list[str] = []
     look_for: list[str] = []
     keywords: list[str] = []
     sweep_query: str | None = None
     chapter: str = ""
 
     def brief(self) -> str:
-        """Render the question for a judgement prompt.
+        """Render the theme for a judgement prompt.
 
-        :returns: One line: id, question, why, and what to look for.
+        :returns: One line: id, description, open questions, and what to look for.
         """
-        parts = [f"- {self.theme}: {self.question}"]
-        if self.why:
-            parts.append(f"Why it matters: {self.why}")
+        parts = [f"- {self.theme}: {self.description}"]
+        if self.questions:
+            parts.append(f"Open questions: {' '.join(self.questions)}")
         if self.look_for:
             parts.append(f"Look for: {', '.join(self.look_for)}")
         if self.keywords:

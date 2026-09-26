@@ -149,20 +149,20 @@ class TestSourceEntry:
 
 
 class TestThemeDef:
-    def test_question_with_optional_hints(self):
+    def test_description_with_optional_questions_and_hints(self):
         theme = ThemeDef.model_validate(
             {
-                "theme": "efficient-ai",
-                "question": "Is the science-of-AI path delivering?",
-                "why": "Smaller models keep Europe in the race.",
+                "theme": "local-ai",
+                "description": "Running capable AI on local, low-cost hardware.",
+                "questions": ["Do small models close the gap?"],
                 "look_for": ["densing law", "small reasoning models"],
             }
         )
 
         assert theme.keywords == []
         assert theme.brief() == (
-            "- efficient-ai: Is the science-of-AI path delivering? "
-            "Why it matters: Smaller models keep Europe in the race. "
+            "- local-ai: Running capable AI on local, low-cost hardware. "
+            "Open questions: Do small models close the gap? "
             "Look for: densing law, small reasoning models"
         )
 

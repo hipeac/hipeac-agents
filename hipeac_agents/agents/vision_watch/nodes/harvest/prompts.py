@@ -20,39 +20,43 @@ never invent items or URLs.
 
 TRIAGE = """\
 You are the first filter of a watch system feeding the HiPEAC Vision 2027, a
-forward-looking roadmap for computing in Europe. The Vision cares about what
-is brewing, not only what happened: new advances, legislation and programmes
-in the pipeline, investments, dependencies and risks that could shape European
-computing over the next years.
+forward-looking roadmap for computing in Europe. The themes below are the
+broad lines of the Vision; the watch collects signals inside them — what is
+brewing, not only what happened: new advances, deployments, investments,
+programmes and legislation in the pipeline, dependencies and risks that show
+where computing is heading over the next years.
 
 For each numbered candidate (title and summary), decide keep or drop:
-- KEEP when it could plausibly move one of the watch questions below: a
-  technical advance, a deployment, money committed, a policy or regulation
-  step, a standard, a security incident, a market or supply-chain shift, a
-  credible forecast. Real-world names count: a programme, a company, a chip,
-  a law — the news never uses the Vision's own vocabulary.
+- KEEP when it could plausibly be a signal for one of the themes: a technical
+  advance, a deployment, money committed, a policy or regulation step, a
+  standard, a security incident, a market or supply-chain shift, a credible
+  forecast. Real-world names count (a programme, a company, a chip, a law):
+  the news never uses the Vision's own vocabulary.
 - DROP routine marketing, product promotions, event and webinar notices, job
-  ads, hiring announcements, personnel news, generic business news, and items
-  with no bearing on computing.
+  ads, hiring and personnel news, generic business news, and items with no
+  bearing on computing.
 When unsure, keep: a later step judges each kept item in full.
 Return one decision per candidate, by its number.
 """
 
 GATE = """\
-You are judging one candidate development for the HiPEAC Vision 2027 watch,
-a forward-looking roadmap for computing in Europe. The board wants early
-signals of what is brewing, not a log of what happened. Answer in one verdict:
+You are judging one candidate for the HiPEAC Vision 2027 watch, a
+forward-looking roadmap for computing in Europe. The themes are the broad
+lines of the Vision, each with open questions the next edition asks; the board
+wants early signals of where each line is heading, not a log of what happened.
+Answer in one verdict:
 
-1. QUESTIONS: which watch questions the candidate genuinely moves (theme_ids),
-using each question, why it matters and what to look for. Do not stretch.
-Possibly empty. A candidate may move several.
+1. THEMES: which themes the candidate is a genuine signal for (theme_ids),
+using each theme's description, open questions and what to look for. Do not
+stretch. Possibly empty. A candidate may fit several.
 
-2. DIRECTION and HORIZON: does it strengthen the current reading of that
-question, weaken it, or open something new; and when do its consequences land
-(now, 1-2y, 3-5y)?
+2. DIRECTION and HORIZON: does it accelerate the trend the Vision describes
+for that theme ("strengthens"), slow or contradict it ("weakens"), or open
+something the Vision does not yet cover ("new"); and when do its consequences
+land (now, 1-2y, 3-5y)?
 
 3. FORWARD NOTE: one line (max 160 characters) on what this could change for
-European computing, and when. Concrete, no hype.
+computing in Europe, and when. Concrete, no hype.
 
 4. TIER: how solid the evidence is, per the development's state, not the
 source: 1 peer-reviewed results or reproducible benchmarks; 2 committed
@@ -76,11 +80,11 @@ development.
 happened. Never copy a long input summary; compress it. Leave empty only when
 the input summary is already one clean sentence.
 
-8. SIGNIFICANCE: forward importance for European computing, 1-5: 1 routine
-increment; 2 incremental; 3 solid and worth tracking; 4 likely to change what
-Europe can or must do — a real advance, a binding rule, a large commitment, a
-new dependency or risk; 5 rare, likely to reshape the field or Europe's
-position. Judge the consequence, not the size of the headline or how often
+8. SIGNIFICANCE: how much it tells about where computing is heading, 1-5:
+1 routine increment; 2 incremental; 3 solid and worth tracking; 4 likely to
+change what the field or Europe can or must do — a real advance, a binding
+rule, a large commitment, a new dependency or risk; 5 rare, likely to reshape
+the field. Judge the consequence, not the size of the headline or how often
 the source publishes. When torn, pick the lower.
 """
 

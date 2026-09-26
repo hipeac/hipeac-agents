@@ -32,7 +32,7 @@ class GateVerdict(BaseModel):
     the weekly run affordable.
     """
 
-    theme_ids: list[str] = Field(description="Ids of the watch questions the candidate moves; empty if none")
+    theme_ids: list[str] = Field(description="Ids of the themes the candidate is a signal for; empty if none")
     tier: int = Field(description="Evidence tier per the development's state: 1-4")
     datapoint: str = Field(default="", description="Single most notable figure, e.g. '$900M'; empty if none")
     summary: str = Field(
@@ -51,7 +51,7 @@ class GateVerdict(BaseModel):
     )
     direction: Direction | None = Field(
         default=None,
-        description="How it moves its question: strengthens or weakens the current reading, or opens something new",
+        description="Accelerates or slows the trend the Vision describes for the theme, or opens something new",
     )
     horizon: Horizon | None = Field(
         default=None, description="When its consequences land: now, within 1-2 years, or in 3-5 years"
@@ -71,7 +71,7 @@ class TriageItem(BaseModel):
     """One candidate's triage decision."""
 
     index: int = Field(description="The candidate's number in the list")
-    keep: bool = Field(description="Whether it could move one of the watch questions")
+    keep: bool = Field(description="Whether it could be a signal for one of the themes")
 
 
 class TriageVerdict(BaseModel):

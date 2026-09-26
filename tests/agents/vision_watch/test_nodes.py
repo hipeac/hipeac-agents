@@ -886,9 +886,7 @@ class TestDigestNode:
             state, services=Services(crawl=None, mail=None, vision=None), llm=llm
         )
 
-        one_big_thing = (
-            updates["digest_markdown"].split("## One big thing")[1].split("## What moved on each question")[0]
-        )
+        one_big_thing = updates["digest_markdown"].split("## One big thing")[1].split("## What moved in each theme")[0]
         assert "https://example.com/fresh-1" in one_big_thing
         assert "https://example.com/heavy" not in one_big_thing
 
@@ -986,9 +984,7 @@ class TestDigestNode:
             state, services=Services(crawl=None, mail=None, vision=None), llm=llm
         )
 
-        one_big_thing = (
-            updates["digest_markdown"].split("## One big thing")[1].split("## What moved on each question")[0]
-        )
+        one_big_thing = updates["digest_markdown"].split("## One big thing")[1].split("## What moved in each theme")[0]
         assert "https://example.com/strong-second" in one_big_thing
         assert "https://example.com/weak-first" not in one_big_thing
 
@@ -1031,7 +1027,7 @@ class TestDigestNode:
 
     async def test_brewing_section_and_question_headings(self, llm):
         """The digest leads with what is brewing: long-horizon items and weak
-        signals from foresight sources, and each theme shows its question."""
+        signals from foresight sources."""
         from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
@@ -1070,12 +1066,12 @@ class TestDigestNode:
         )
 
         markdown = updates["digest_markdown"]
-        brewing = markdown.split("## What's brewing")[1].split("## What moved on each question")[0]
+        brewing = markdown.split("## What's brewing")[1].split("## What moved in each theme")[0]
         assert "- _Summary 1._ Could reset EU fab plans. — [example.com](https://example.com/b1) (3-5y)" in brewing
         assert "(3-5y)" in brewing
         assert "Summary 3." in brewing, "foresight sources are weak signals"
         assert "Summary 2." not in brewing
-        assert "### physical-ai — Are AI agents entering the physical world safely?" in markdown
+        assert "### physical-ai" in markdown
 
     async def test_finding_in_two_clusters_lists_both_once(self, llm):
         """Regression: a finding assigned to two clusters in the same theme
@@ -1120,7 +1116,7 @@ class TestDigestNode:
             state, services=Services(crawl=None, mail=None, vision=None), llm=llm
         )
 
-        across = updates["digest_markdown"].split("## What moved on each question")[1].split("## Trending this week")[0]
+        across = updates["digest_markdown"].split("## What moved in each theme")[1].split("## Trending this week")[0]
         shared_lines = [line for line in across.splitlines() if "https://example.com/shared" in line]
         assert len(shared_lines) == 1
         assert "in cluster-a, cluster-b" in shared_lines[0]
@@ -1165,7 +1161,7 @@ class TestDigestNode:
             state, services=Services(crawl=None, mail=None, vision=None), llm=llm
         )
 
-        across = updates["digest_markdown"].split("## What moved on each question")[1].split("## Trending this week")[0]
+        across = updates["digest_markdown"].split("## What moved in each theme")[1].split("## Trending this week")[0]
         item_lines = [line for line in across.splitlines() if line.startswith("- _Entry")]
         overflow = [line for line in across.splitlines() if "more entries this week" in line]
         assert len(item_lines) == 12
@@ -1212,7 +1208,7 @@ class TestDigestNode:
             llm=llm,
         )
 
-        tips = updates["digest_markdown"].split("## Board tips this week")[1].split("## What moved on each question")[0]
+        tips = updates["digest_markdown"].split("## Board tips this week")[1].split("## What moved in each theme")[0]
         assert "LLMs as a cognitive virus" in tips
         assert "https://arxiv.org/html/2609.03344v1" in tips
         assert "flagged by Test Sender" in tips

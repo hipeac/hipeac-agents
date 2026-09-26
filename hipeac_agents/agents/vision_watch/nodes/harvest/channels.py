@@ -1,8 +1,8 @@
 """The harvest node's channels: one function per collection channel.
 
 Channels: feeds, arXiv, scraped pages, newsletters, the unattributed inbox,
-board tips, and the general sweep (one date-bounded web search per watch
-question). The gate (``gate_candidates``) is shared by all of them.
+board tips, and the general sweep (one date-bounded web search per theme).
+The gate (``gate_candidates``) is shared by all of them.
 """
 
 import logging
@@ -139,7 +139,7 @@ async def gate_candidates(
     if survivors and not (tip or triaged):
         kept = await ctx.triage([(c.title, c.summary) for c in survivors], themes)
         rejected.extend(
-            _reject(c, source_id, "off_theme", "triage: moves no watch question")
+            _reject(c, source_id, "off_theme", "triage: no signal for any theme")
             for i, c in enumerate(survivors)
             if i not in kept
         )
@@ -895,7 +895,7 @@ async def harvest_sweep(
     seen: set[str] = set()
 
     for theme in themes:
-        query = theme.sweep_query or theme.question
+        query = theme.sweep_query or theme.description
         hits = [
             hit
             for hit in await services.crawl.search(query, limit=5, since=window_start, until=window_end)
