@@ -8,6 +8,7 @@ live workspace for review. ``apply_replay`` then swaps it in: the old
 evidence and clusters are archived as ``-v1`` and the weeks re-clustered.
 """
 
+import asyncio
 import math
 import shutil
 from dataclasses import dataclass
@@ -161,26 +162,28 @@ async def replay_week(
     for c in candidates:
         by_source.setdefault(c.source_id, []).append(c.candidate)
 
-    verified: list[Finding] = []
-    rejected: list[RejectedItem] = list(kept_rejects)
-    for source_id, items in by_source.items():
-        source = sources.get(source_id)
-        findings, rejects = await gate_candidates(
-            ctx,
-            services,
-            items,
-            source,
-            window_start,
-            window_end,
-            [],
-            themes,
-            source_id,
-            "direct" if source else NON_CATALOG.get(source_id, "sweep"),
-            tip=source_id == "board-tip",
-            known_pages={item.url: _known_page(item) for item in items},
+    # Sources run concurrently; the context's semaphore bounds the LLM calls.
+    gated = await asyncio.gather(
+        *(
+            gate_candidates(
+                ctx,
+                services,
+                items,
+                sources.get(source_id),
+                window_start,
+                window_end,
+                [],
+                themes,
+                source_id,
+                "direct" if source_id in sources else NON_CATALOG.get(source_id, "sweep"),
+                tip=source_id == "board-tip",
+                known_pages={item.url: _known_page(item) for item in items},
+            )
+            for source_id, items in by_source.items()
         )
-        verified.extend(findings)
-        rejected.extend(rejects)
+    )
+    verified: list[Finding] = [f for findings, _ in gated for f in findings]
+    rejected: list[RejectedItem] = list(kept_rejects) + [r for _, rejects in gated for r in rejects]
 
     capped, overflow = harvest_node._cap_source_volume(verified)
     numbered = harvest_node._assign_ids(week, harvest_node._merge_url_duplicates(capped))
