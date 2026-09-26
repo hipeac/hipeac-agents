@@ -54,7 +54,7 @@ def _build_llms() -> tuple[object, object]:
 
 def _initial_state(
     week: str,
-    today: date | None = None,
+    window: tuple[date, date],
     source_limit: int | None = None,
     source_only: list[str] | None = None,
     skip_sweep: bool = False,
@@ -64,14 +64,14 @@ def _initial_state(
     """Build the initial graph state for a run.
 
     :param week: The week label (the ISO week of the closing Friday).
-    :param today: The day the run is simulating; defaults to today.
+    :param window: The ``(saturday, friday)`` window the run targets.
     :param source_limit: Cap on the number of due sources checked.
     :param source_only: Only check these source ids.
     :param skip_sweep: Drop the general sweep (cheap partial runs).
     :param send: Send the composed digest by email (opt-in).
     :returns: The initial state.
     """
-    window_start, window_end = cadence.current_window(today or date.today())
+    window_start, window_end = window
     return VisionWatchState(
         week=week,
         window_start=window_start,
@@ -84,13 +84,25 @@ def _initial_state(
     )
 
 
-def _week_label(today: date | None = None) -> str:
-    """Compute the current run's week label from its window.
+def _target_window(on: date | None = None) -> tuple[date, date]:
+    """Pick the weekly window a run targets.
 
-    :param today: The day the run is simulating; defaults to today.
-    :returns: e.g. ``"2026-W37"``.
+    Without a date, the most recently closed Saturday–Friday window: a run on
+    a Saturday targets the week that closed the day before, never the week
+    that has just opened (harvesting an open week writes partial, write-once
+    evidence). With a date, the window containing it.
+
+    :param on: The ``--on`` date, if given.
+    :returns: The ``(saturday, friday)`` window.
+    :raises ValueError: If the window has not closed yet.
     """
-    return cadence.weekly_label(cadence.current_window(today or date.today())[1])
+    if on is None:
+        return cadence.last_closed_window(date.today())
+
+    window = cadence.current_window(on)
+    if window[1] > date.today():
+        raise ValueError(f"the week containing {on.isoformat()} closes on {window[1].isoformat()}, not yet")
+    return window
 
 
 def _init_sentry() -> None:
@@ -103,7 +115,7 @@ def _init_sentry() -> None:
 
 async def _run(
     nodes: list[str],
-    today: date | None = None,
+    window: tuple[date, date] | None = None,
     data_dir: str | None = None,
     source_limit: int | None = None,
     source_only: list[str] | None = None,
@@ -118,7 +130,7 @@ async def _run(
     keeps every Firecrawl markdown).
 
     :param nodes: The nodes to run, in order.
-    :param today: The day the run is simulating (``--on``); defaults to today.
+    :param window: The targeted ``(saturday, friday)`` window; monthly runs have none.
     :param data_dir: Optional workspace-root override (``--data-dir``).
     :param source_limit: Cap on the number of due sources checked.
     :param source_only: Only check these source ids.
@@ -132,10 +144,11 @@ async def _run(
         watch_settings.DATA_DIR = data_dir
 
     _init_sentry()
-    week = _week_label(today)
+    window = window or cadence.last_closed_window(date.today())
+    week = cadence.weekly_label(window[1])
 
     services = await load_services_async()
-    if services.crawl is not None:
+    if services.crawl is not None and "harvest" in nodes:
         # The scrape cache is workspace-level and content-addressed (by URL
         # hash), so every markdown Firecrawl returns is reused across weeks.
         from hipeac_agents.services.crawl import CachedCrawl
@@ -172,7 +185,7 @@ async def _run(
     result = await compiled.ainvoke(
         _initial_state(
             week,
-            today,
+            window,
             source_limit=source_limit,
             source_only=source_only or [],
             skip_sweep=skip_sweep,
@@ -181,7 +194,12 @@ async def _run(
         )
     )
 
-    print(f"week {week}: findings={len(result['findings'])} rejected={len(result['rejected'])}")
+    if month:
+        print(f"month {month}: digest {'sent' if result.get('digest_sent') else 'written'}")
+        return 0
+
+    findings, rejected = _week_counts(week, result)
+    print(f"week {week}: findings={findings} rejected={rejected}")
 
     for outcome in result["source_outcomes"]:
         source_id = getattr(outcome, "source_id", None) if not isinstance(outcome, dict) else outcome["source_id"]
@@ -193,6 +211,27 @@ async def _run(
     return 0
 
 
+def _week_counts(week: str, result: dict) -> tuple[int, int]:
+    """Count the week's findings and rejected items for the run summary.
+
+    A digest run carries no evidence in its graph state, so the counts come
+    from the week's recorded files rather than reading as an empty week.
+
+    :param week: The week label.
+    :param result: The final graph state.
+    :returns: ``(findings, rejected)``.
+    """
+    if result["findings"] or result["rejected"]:
+        return len(result["findings"]), len(result["rejected"])
+
+    findings_file = workspace.read_findings_file(week)
+    rejected_file = workspace.read_rejected_file(week)
+    return (
+        len(findings_file.findings) if findings_file else 0,
+        len(rejected_file.rejected) if rejected_file else 0,
+    )
+
+
 async def main(argv: list[str] | None = None) -> int:
     """Run the CLI.
 
@@ -201,7 +240,7 @@ async def main(argv: list[str] | None = None) -> int:
     """
     parser = argparse.ArgumentParser(prog="hipeac_agents")
     parser.add_argument("command", choices=["weekly-harvest", "weekly-digest", "monthly-digest", "simulate-harvest"])
-    parser.add_argument("--on", help="simulate-harvest / weekly-digest: ISO date to execute on, e.g. 2026-06-26")
+    parser.add_argument("--on", help="harvest / weekly-digest: run for the week containing this ISO date")
     parser.add_argument("--month", help="monthly-digest: calendar month to synthesise, e.g. 2026-07")
     parser.add_argument("--data-dir", help="workspace-root override (default: HIPEAC_AGENTS_DATA_DIR)")
     parser.add_argument("--limit", type=int, help="harvest: check at most N due sources (cheap partial runs)")
@@ -216,9 +255,24 @@ async def main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    if args.command == "weekly-harvest":
+    if args.command == "simulate-harvest" and not args.on:
+        parser.error("simulate-harvest requires --on YYYY-MM-DD (e.g. --on 2026-06-26 for a Friday-evening run)")
+        return 2
+
+    on = date.fromisoformat(args.on) if args.on else None
+    try:
+        window = _target_window(on)
+    except ValueError as exc:
+        print(f"refusing to run: {exc}", file=sys.stderr)
+        return 2
+
+    if args.command in ("weekly-harvest", "simulate-harvest"):
+        if on is not None and on.weekday() != 4:
+            print(f"warning: {args.on} is a {on.strftime('%A')}; a simulated Friday run is the norm", file=sys.stderr)
         return await _run(
             HARVEST_NODES,
+            window=window,
+            data_dir=args.data_dir,
             source_limit=args.limit,
             source_only=args.only.split(",") if args.only else None,
             skip_sweep=args.skip_sweep,
@@ -227,7 +281,7 @@ async def main(argv: list[str] | None = None) -> int:
     if args.command == "weekly-digest":
         return await _run(
             DIGEST_NODES,
-            today=date.fromisoformat(args.on) if args.on else None,
+            window=window,
             data_dir=args.data_dir,
             send=args.send,
         )
@@ -243,22 +297,7 @@ async def main(argv: list[str] | None = None) -> int:
             month=args.month,
         )
 
-    if not args.on:
-        parser.error("simulate-harvest requires --on YYYY-MM-DD (e.g. --on 2026-06-26 for a Friday-evening run)")
-        return 2
-
-    today = date.fromisoformat(args.on)
-    if today.weekday() != 4:
-        print(f"warning: {args.on} is a {today.strftime('%A')}; a simulated Friday run is the norm", file=sys.stderr)
-
-    return await _run(
-        HARVEST_NODES,
-        today=today,
-        data_dir=args.data_dir,
-        source_limit=args.limit,
-        source_only=args.only.split(",") if args.only else [],
-        skip_sweep=args.skip_sweep,
-    )
+    return 2
 
 
 if __name__ == "__main__":

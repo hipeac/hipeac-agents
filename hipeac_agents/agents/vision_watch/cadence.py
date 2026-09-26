@@ -31,3 +31,18 @@ def current_window(today: date) -> tuple[date, date]:
     offset_to_saturday = (today.weekday() - 5) % 7
     window_start = today - timedelta(days=offset_to_saturday)
     return window_start, window_start + timedelta(days=6)
+
+
+def last_closed_window(today: date) -> tuple[date, date]:
+    """Compute the most recently closed weekly window as of a given day.
+
+    A Friday closes its own window; any other day belongs to a window still
+    open, so the last closed one is the window ending the previous Friday.
+
+    :param today: The day of the run.
+    :returns: A ``(window_start, window_end)`` pair with ``window_end <= today``.
+    """
+    window_start, window_end = current_window(today)
+    if window_end > today:
+        return window_start - timedelta(days=7), window_end - timedelta(days=7)
+    return window_start, window_end

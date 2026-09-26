@@ -90,6 +90,18 @@ sources:
 """
 
 
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path_factory, monkeypatch):
+    """Point the default workspace at a throwaway dir, never the ``.env`` one.
+
+    ``./run`` loads ``.env``, whose data dir is the live workspace; a test that
+    reads the default workspace (or a CLI run that rewrites it) must not reach it.
+    """
+    from hipeac_agents.agents.vision_watch import settings as watch_settings
+
+    monkeypatch.setattr(watch_settings, "DATA_DIR", str(tmp_path_factory.mktemp("default-workspace")))
+
+
 @pytest.fixture
 def data_dir(tmp_path: str) -> str:
     """A throwaway workspace root with the human-owned config files in place."""
