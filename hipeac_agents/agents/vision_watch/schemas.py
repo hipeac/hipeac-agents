@@ -1,9 +1,9 @@
 """Domain schemas for the vision-watch workspace files."""
 
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 Region = Literal["eu", "global"]
@@ -35,7 +35,6 @@ SourceClass = Literal[
     "community",
 ]
 Independence = Literal["high", "med", "low"]
-Stream = Literal["evidence", "signals"]
 Chapter = Literal["future-ahead", "technology-roadmap"]
 
 AccessMethod = Literal["direct", "firecrawl", "newsletter", "board-tip", "sweep"]
@@ -159,32 +158,68 @@ class ThemeDef(BaseModel):
     sweep_query: str | None = None
 
 
+class ClassDefaults(BaseModel):
+    """Per-class defaults in the catalog: a source inherits them unless it overrides."""
+
+    tier: Tier
+    independence: Independence
+
+
 class SourceEntry(BaseModel):
-    """One source from the human-owned ``config/source-catalog.yaml``."""
+    """One source from the human-owned ``config/source-catalog.yaml``.
+
+    The channel follows from the fields: ``arxiv`` is an arXiv category read
+    through the API, ``feed_url`` a feed, otherwise the page is scraped;
+    ``senders`` adds the newsletter channel, and ``web: false`` makes a
+    newsletter-only source. ``skip`` gives the reason a source is never
+    checked (e.g. bot-protected).
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
     id: str
-    name: str
     url: str
+    name: str = ""
     feed_url: str | None = None
     arxiv: str | None = None
     source_class: SourceClass = Field(alias="class")
-    themes: list[str] = []
-    region: Region
+    region: Region = "global"
     tier: Tier
     independence: Independence
-    stream: Stream
     senders: list[str] = []
     web: bool = True
-    newsletter: bool = False
-    bot_protected: bool = False
-    last_verified: date | None = None
-    notes: str | None = None
+    skip: str | None = None
+
+    @model_validator(mode="after")
+    def _default_name(self) -> SourceEntry:
+        self.name = self.name or self.id
+        return self
+
+    @property
+    def newsletter(self) -> bool:
+        """Whether the source also arrives by email (it declares senders)."""
+        return bool(self.senders)
 
 
 class SourceCatalog(BaseModel):
-    """The parsed ``source-catalog.yaml`` document."""
+    """The parsed ``source-catalog.yaml`` document.
 
-    meta: dict[str, object] = {}
+    On disk, sources are grouped under their class and inherit that class's
+    ``classes`` defaults (tier, independence); in memory they are one flat list.
+    """
+
+    classes: dict[SourceClass, ClassDefaults] = {}
     sources: list[SourceEntry]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _flatten_groups(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or not isinstance(data.get("sources"), dict):
+            return data
+        defaults = data.get("classes") or {}
+        flat = [
+            {**(defaults.get(source_class) or {}), "class": source_class, **entry}
+            for source_class, entries in data["sources"].items()
+            for entry in entries or []
+        ]
+        return {**data, "sources": flat}

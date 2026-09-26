@@ -30,7 +30,7 @@ async def snapshot_feeds(fetch: Callable[[str], Awaitable[str | None]], today: d
     held: dict[str, int] = {}
 
     for source in workspace.read_source_catalog().sources:
-        if not source.feed_url or source.arxiv or source.bot_protected:
+        if not source.feed_url or source.arxiv or source.skip:
             continue
 
         xml = await fetch(source.feed_url)

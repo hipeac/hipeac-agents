@@ -31,62 +31,26 @@ themes:
 """
 
 SOURCE_CATALOG_YAML = """\
-meta:
-    version: 6
-    company_slot_cap: 25
+classes:
+    aggregators: {tier: 4, independence: low}
+    capital: {tier: 4, independence: high}
+    eu-uptake: {tier: 2, independence: low}
+    programmes: {tier: 2, independence: high}
+    foresight: {tier: 3, independence: med}
 
 sources:
-    - id: robot-report
-      name: Robot Report
-      url: "https://example.com/robot-report"
-      feed_url: "https://example.com/robot-report/feed"
-      class: aggregators
-      themes: [physical-ai]
-      region: global
-      tier: 2
-      independence: high
-      stream: evidence
-
-    - id: fabricated-knowledge
-      name: Fabricated Knowledge
-      url: "https://example.com/fk"
-      class: capital
-      themes: [new-hardware]
-      region: global
-      tier: 4
-      independence: high
-      stream: evidence
-      newsletter: true
-
-    - id: eu-fund
-      name: EU Fund
-      url: "https://example.com/eu"
-      class: eu-uptake
-      themes: [physical-ai]
-      region: eu
-      tier: 2
-      independence: low
-      stream: evidence
-
-    - id: darpa-news
-      name: DARPA News
-      url: "https://example.com/darpa"
-      class: programmes
-      themes: [physical-ai, agentic-ai]
-      region: global
-      tier: 2
-      independence: high
-      stream: evidence
-
-    - id: signals-watch
-      name: Signals Watch
-      url: "https://example.com/signals"
-      class: foresight
-      themes: []
-      region: global
-      tier: 3
-      independence: med
-      stream: signals
+    aggregators:
+        - {id: robot-report, name: Robot Report, url: "https://example.com/robot-report",
+           feed_url: "https://example.com/robot-report/feed", tier: 2, independence: high}
+    capital:
+        - {id: fabricated-knowledge, name: Fabricated Knowledge, url: "https://example.com/fk",
+           senders: [fk@substack.com]}
+    eu-uptake:
+        - {id: eu-fund, name: EU Fund, url: "https://example.com/eu", region: eu}
+    programmes:
+        - {id: darpa-news, name: DARPA News, url: "https://example.com/darpa"}
+    foresight:
+        - {id: signals-watch, url: "https://example.com/signals"}
 """
 
 

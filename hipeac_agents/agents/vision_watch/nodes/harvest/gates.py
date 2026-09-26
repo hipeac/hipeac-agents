@@ -42,15 +42,15 @@ def http_url_is_dead(url: str) -> bool | None:
 
 
 def build_due_list(catalog: schemas.SourceCatalog) -> list[schemas.SourceEntry]:
-    """Build the list of sources due this run: every evidence-stream source.
+    """Build the list of sources due this run: every catalog source, every week.
 
-    All evidence sources are checked every week; the ``signals`` stream is
-    the future-signals loop's, not the harvest's.
+    Skipped sources stay in the list, so they are reported (as blocked)
+    rather than silently missing from the run summary.
 
     :param catalog: The parsed source catalog.
-    :returns: The evidence-stream sources.
+    :returns: The catalog's sources.
     """
-    return [source for source in catalog.sources if source.stream == "evidence"]
+    return list(catalog.sources)
 
 
 def window_gate(item_date: date | None, window_start: date, window_end: date) -> bool:

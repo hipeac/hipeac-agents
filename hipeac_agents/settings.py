@@ -31,8 +31,3 @@ LLM_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-5.6-luna")
 LLM_JUDGEMENT_MODEL = os.environ.get("OPENAI_JUDGEMENT_MODEL", "gpt-4o-mini")
 
 SENTRY_DSN = os.environ.get("SENTRY_DSN") or None
-
-# TODO(v1): Deep Research escalation for bot_protected sources is not wired
-# up — no provider configured for Deep Research yet, so those sources are
-# reported as blocked. The general sweep runs as a per-theme Firecrawl search
-# in the harvest's sweep channel.

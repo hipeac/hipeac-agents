@@ -492,14 +492,14 @@ async def harvest_web_source(
     :param themes: The watched themes.
     :returns: ``(findings, rejected, outcome)`` for the source.
     """
-    if source.bot_protected:
+    if source.skip:
         return (
             [],
             [],
             SourceOutcome(
                 source_id=source.id,
                 status="blocked",
-                detail="bot_protected — Deep Research escalation not wired up (TODO v1)",
+                detail=f"skipped: {source.skip}",
             ),
         )
 

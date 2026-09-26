@@ -9,6 +9,7 @@ from hipeac_agents.agents.vision_watch.schemas import (
     ClusterEntry,
     Finding,
     RejectedItem,
+    SourceCatalog,
     SourceEntry,
     ThemeDef,
 )
@@ -113,27 +114,38 @@ class TestClusterEntry:
 
 
 class TestSourceEntry:
-    def test_parses_catalog_yaml_fields(self):
+    def test_minimal_entry_takes_defaults(self):
         entry = SourceEntry.model_validate(
             {
                 "id": "darpa-news",
-                "name": "DARPA News",
                 "url": "https://www.darpa.mil/news",
-                "feed_url": "https://www.darpa.mil/rss",
                 "class": "programmes",
-                "themes": ["agentic-ai"],
-                "region": "global",
                 "tier": 2,
                 "independence": "high",
-                "stream": "evidence",
-                "cadence": "monthly",
             }
         )
 
-        assert entry.source_class == "programmes"
+        assert entry.name == "darpa-news"
+        assert entry.region == "global"
         assert entry.web is True
         assert entry.newsletter is False
-        assert entry.bot_protected is False
+        assert entry.skip is None
+
+    def test_senders_make_a_newsletter(self):
+        entry = SourceEntry.model_validate(
+            {
+                "id": "semianalysis",
+                "url": "https://semianalysis.com",
+                "class": "aggregators",
+                "tier": 4,
+                "independence": "low",
+                "senders": ["semianalysis@substack.com"],
+                "web": False,
+            }
+        )
+
+        assert entry.newsletter is True
+        assert entry.web is False
 
 
 class TestThemeDef:
@@ -151,10 +163,18 @@ class TestThemeDef:
 
 
 class TestSourceCatalog:
-    def test_parses_full_catalog(self, data_dir):
+    def test_grouped_file_flattens_with_class_defaults(self, data_dir):
         from hipeac_agents.agents.vision_watch import workspace
 
         catalog = workspace.read_source_catalog(data_dir)
+        by_id = {s.id: s for s in catalog.sources}
 
-        assert catalog.meta["version"] == 6
-        assert len(catalog.sources) > 0
+        assert by_id["darpa-news"].source_class == "programmes"
+        assert (by_id["darpa-news"].tier, by_id["darpa-news"].independence) == (2, "high")
+        assert (by_id["robot-report"].tier, by_id["robot-report"].independence) == (2, "high"), "overrides win"
+        assert (by_id["eu-fund"].tier, by_id["eu-fund"].region) == (2, "eu")
+        assert by_id["fabricated-knowledge"].newsletter is True
+
+    def test_source_without_class_defaults_needs_its_own_tier(self):
+        with pytest.raises(ValueError):
+            SourceCatalog.model_validate({"sources": {"companies": [{"id": "x", "url": "https://x"}]}})

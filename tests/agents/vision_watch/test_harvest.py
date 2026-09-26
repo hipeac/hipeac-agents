@@ -55,15 +55,17 @@ def catalog() -> SourceCatalog:
 
 
 class TestBuildDueList:
-    def test_every_evidence_source_is_due_every_week(self, catalog):
+    def test_every_source_is_due_every_week(self, catalog):
+        """Foresight sources (once the unread "signals" stream) are harvested
+        too; the forward-looking gate decides what they are worth."""
         due = harvest.build_due_list(catalog)
 
-        assert [s.id for s in due] == ["evidence-source", "other-evidence-source"]
+        assert [s.id for s in due] == ["evidence-source", "other-evidence-source", "signals-source"]
 
-    def test_signals_stream_never_due(self, catalog):
-        due = harvest.build_due_list(catalog)
+    def test_skipped_sources_stay_due_so_they_are_reported(self, catalog):
+        catalog.sources[0].skip = "bot-protected"
 
-        assert all(s.stream == "evidence" for s in due)
+        assert catalog.sources[0] in harvest.build_due_list(catalog)
 
 
 class TestWindowGate:

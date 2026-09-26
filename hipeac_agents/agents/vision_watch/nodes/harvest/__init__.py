@@ -19,7 +19,7 @@ LLM-JUDGEMENT CALLS — review before the first live run:
    is one finding, not two.
 
 Boundaries: collect, verify, and record only — no grouping, no convergence
-judgement, no composing. Works the evidence stream only.
+judgement, no composing.
 """
 
 from .gates import (  # noqa: F401
