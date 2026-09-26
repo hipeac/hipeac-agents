@@ -1071,7 +1071,7 @@ class TestDigestNode:
 
         markdown = updates["digest_markdown"]
         brewing = markdown.split("## What's brewing")[1].split("## What moved on each question")[0]
-        assert "Summary 1. Could reset EU fab plans." in brewing
+        assert "- _Summary 1._ Could reset EU fab plans. — [example.com](https://example.com/b1) (3-5y)" in brewing
         assert "(3-5y)" in brewing
         assert "Summary 3." in brewing, "foresight sources are weak signals"
         assert "Summary 2." not in brewing
