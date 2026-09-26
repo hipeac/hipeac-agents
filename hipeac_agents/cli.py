@@ -24,7 +24,7 @@ from hipeac_agents.agents.vision_watch.state import VisionWatchState
 from hipeac_agents.services.factory import load_services_async
 
 
-HARVEST_NODES = ["harvest"]
+HARVEST_NODES = ["harvest", "health"]
 DIGEST_NODES = ["cluster", "digest"]
 
 
@@ -289,7 +289,7 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--send",
         action="store_true",
-        help="digest: email the composed digest to the board list (default: compose and write only)",
+        help="digest: email the digest to the board; harvest: email source-health changes to the dev list",
     )
     args = parser.parse_args(argv)
 
@@ -319,6 +319,7 @@ async def main(argv: list[str] | None = None) -> int:
             source_limit=args.limit,
             source_only=args.only.split(",") if args.only else None,
             skip_sweep=args.skip_sweep,
+            send=args.send,
             redo=args.redo,
         )
 

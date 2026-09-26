@@ -12,7 +12,14 @@ from typing import Any
 
 from hipeac_agents.agents.vision_watch import settings as watch_settings
 from hipeac_agents.agents.vision_watch import workspace
-from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, RejectedFile, RejectedItem
+from hipeac_agents.agents.vision_watch.schemas import (
+    Finding,
+    FindingsFile,
+    RejectedFile,
+    RejectedItem,
+    SourceReport,
+    SourcesFile,
+)
 from hipeac_agents.agents.vision_watch.state import SourceOutcome, VisionWatchState
 from hipeac_agents.services.factory import Services
 
@@ -199,12 +206,41 @@ async def harvest_node(
     )
     workspace.write_findings_file(findings_file)
     workspace.write_rejected_file(rejected_file)
+    workspace.write_sources_file(
+        SourcesFile(week=state.week, created=date.today(), sources=_source_reports(outcomes, rejected_file.rejected))
+    )
 
     return {
         "findings": numbered,
         "rejected": rejected_file.rejected,
         "source_outcomes": outcomes,
     }
+
+
+def _source_reports(outcomes: list[SourceOutcome], rejected: list[RejectedItem]) -> list[SourceReport]:
+    """Turn the run's source outcomes into persisted reports with reject reasons.
+
+    :param outcomes: One outcome per checked source.
+    :param rejected: The week's final rejected items.
+    :returns: One report per outcome, with its rejection reasons tallied.
+    """
+    reasons: dict[str, dict[str, int]] = {}
+    for item in rejected:
+        by_reason = reasons.setdefault(item.source_id, {})
+        by_reason[item.reason] = by_reason.get(item.reason, 0) + 1
+
+    return [
+        SourceReport(
+            source_id=o.source_id,
+            status=o.status,
+            verified=o.verified,
+            rejected=o.rejected,
+            reasons=reasons.get(o.source_id, {}),
+            flags=o.flags,
+            detail=o.detail,
+        )
+        for o in outcomes
+    ]
 
 
 def _assign_ids(week: str, findings: list[Finding]) -> list[Finding]:

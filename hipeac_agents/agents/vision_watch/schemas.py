@@ -39,6 +39,7 @@ Stream = Literal["evidence", "signals"]
 Chapter = Literal["future-ahead", "technology-roadmap"]
 
 AccessMethod = Literal["direct", "firecrawl", "newsletter", "board-tip", "sweep"]
+HealthLabel = Literal["ok", "skipped", "fetch_failed", "empty_feed", "truncated_feed", "stale_listing", "silent"]
 
 
 class Finding(BaseModel):
@@ -86,6 +87,34 @@ class RejectedFile(BaseModel):
     created: date
     generated_by: str = "harvest-sources"
     rejected: list[RejectedItem]
+
+
+class SourceReport(BaseModel):
+    """How one source fared in a week's harvest, for the source-health check."""
+
+    source_id: str
+    status: str
+    verified: int = 0
+    rejected: int = 0
+    reasons: dict[str, int] = {}
+    flags: list[str] = []
+    detail: str = ""
+
+
+class SourcesFile(BaseModel):
+    """Write-once per-source harvest report (``evidence/<week>/sources.json``)."""
+
+    week: str
+    created: date
+    sources: list[SourceReport]
+
+
+class HealthFile(BaseModel):
+    """Write-once source-health labels for a week (``evidence/<week>/health.json``)."""
+
+    week: str
+    created: date
+    labels: dict[str, HealthLabel]
 
 
 class ClusterEntry(BaseModel):

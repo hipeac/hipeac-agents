@@ -165,6 +165,45 @@ def grouping_path(week: str, data_dir: str | None = None) -> Path:
     return week_dir(week, data_dir) / "grouping.json"
 
 
+def write_sources_file(file: schemas.SourcesFile, data_dir: str | None = None) -> Path:
+    """Write the week's per-source harvest report (write-once)."""
+    return write_once(week_dir(file.week, data_dir) / "sources.json", file.model_dump_json(indent=2))
+
+
+def read_sources_file(week: str, data_dir: str | None = None) -> schemas.SourcesFile | None:
+    """Read a week's per-source harvest report.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The report, or ``None`` when the week has none (harvested before reports existed).
+    """
+    path = week_dir(week, data_dir) / "sources.json"
+    return schemas.SourcesFile.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def write_health(file: schemas.HealthFile, markdown: str, data_dir: str | None = None) -> Path:
+    """Write a week's source-health labels and their readable report (write-once).
+
+    :param file: The labels.
+    :param markdown: The rendered report.
+    :param data_dir: Optional workspace-root override.
+    :returns: The markdown report's path.
+    """
+    write_once(week_dir(file.week, data_dir) / "health.json", file.model_dump_json(indent=2))
+    return write_once(week_dir(file.week, data_dir) / "health.md", markdown)
+
+
+def read_health_file(week: str, data_dir: str | None = None) -> schemas.HealthFile | None:
+    """Read a week's source-health labels.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The labels, or ``None`` when the week has no health report.
+    """
+    path = week_dir(week, data_dir) / "health.json"
+    return schemas.HealthFile.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
 def write_grouping_plan(week: str, plan_json: str, data_dir: str | None = None) -> Path:
     """Record the week's grouping decision (write-once).
 
@@ -688,6 +727,8 @@ __all__ = [
     "read_all_findings",
     "read_cluster_log",
     "read_grouping_plan",
+    "read_health_file",
+    "read_sources_file",
     "read_feed_snapshot",
     "read_findings_file",
     "read_monthly_digest",
@@ -705,6 +746,8 @@ __all__ = [
     "workspace_root",
     "write_findings_file",
     "write_grouping_plan",
+    "write_health",
+    "write_sources_file",
     "write_rejected_file",
     "write_weekly_digest",
 ]

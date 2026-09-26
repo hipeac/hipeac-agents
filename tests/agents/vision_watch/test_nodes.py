@@ -95,6 +95,10 @@ class TestHarvestNode:
         assert updates["findings"][0].source_id == "robot-report"
         assert updates["source_outcomes"][0].status == "collected"
         assert (workspace.week_dir("2026-W24") / "findings.json").exists()
+        report = workspace.read_sources_file("2026-W24")
+        assert [(r.source_id, r.status, r.verified) for r in report.sources if r.source_id == "robot-report"] == [
+            ("robot-report", "collected", 1)
+        ]
 
     async def test_already_harvested_week_replays_instead_of_re_collecting(self, data_dir, llm, weekly_catalog):
         """Regression: the evidence files are write-once, so re-running a week

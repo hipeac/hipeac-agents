@@ -44,11 +44,11 @@ def fake_graph(monkeypatch):
 
 
 class TestWeeklyHarvest:
-    async def test_runs_harvest_node_only(self, fake_graph, capsys):
+    async def test_runs_harvest_then_source_health(self, fake_graph, capsys):
         exit_code = await cli.main(["weekly-harvest"])
 
         assert exit_code == 0
-        assert fake_graph[0][0] == ["harvest"]
+        assert fake_graph[0][0] == ["harvest", "health"]
         assert "robot-report: collected (1v/0r)" in capsys.readouterr().out
 
 

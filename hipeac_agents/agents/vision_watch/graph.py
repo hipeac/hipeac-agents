@@ -5,17 +5,17 @@ from typing import Any
 
 from langgraph.graph import START, StateGraph
 
-from .nodes import cluster, digest, harvest, monthly
+from .nodes import cluster, digest, harvest, health, monthly
 from .state import VisionWatchState
 
 
-NODE_ORDER = ("harvest", "cluster", "digest", "monthly")
+NODE_ORDER = ("harvest", "health", "cluster", "digest", "monthly")
 
 
 def build_graph(nodes: list[str], services: Any, judgement_llm: Any, prose_llm: Any | None = None):
     """Build a StateGraph running the requested nodes in spec order.
 
-    ``weekly-harvest`` runs ``["harvest"]``; ``weekly-digest`` runs
+    ``weekly-harvest`` runs ``["harvest", "health"]``; ``weekly-digest`` runs
     ``["cluster", "digest"]``. A node's service boundary is enforced by what
     it is wired with, not by what tools exist. Harvest runs on the judgement
     model; cluster and digest run on the prose model.
@@ -33,6 +33,8 @@ def build_graph(nodes: list[str], services: Any, judgement_llm: Any, prose_llm: 
     for name in nodes:
         if name == "harvest":
             graph.add_node("harvest", partial(harvest.harvest_node, services=services, llm=judgement_llm))
+        elif name == "health":
+            graph.add_node("health", partial(health.health_node, services=services))
         elif name == "cluster":
             graph.add_node("cluster", partial(cluster.cluster_node, services=services, llm=prose_llm))
         elif name == "digest":
