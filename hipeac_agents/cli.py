@@ -7,6 +7,8 @@ Usage::
     ./run python -m hipeac_agents monthly-digest --month 2026-07 [--send]
     ./run python -m hipeac_agents simulate-harvest --on 2026-06-26 [--limit 4] [--skip-sweep]
     ./run python -m hipeac_agents snapshot-feeds        # daily: keep busy feeds' whole week
+    ./run python -m hipeac_agents replay-gate --from 2026-W26 --to 2026-W39 [--dry-run]
+    ./run python -m hipeac_agents replay-gate --apply <replay folder>
 
 Sending is opt-in: without ``--send`` a digest run composes and writes the
 digest, and mails no one.
@@ -17,9 +19,10 @@ import logging
 import os
 import sys
 from datetime import date
+from pathlib import Path
 
 from hipeac_agents import settings
-from hipeac_agents.agents.vision_watch import cadence, graph, snapshots, workspace
+from hipeac_agents.agents.vision_watch import cadence, graph, replay, snapshots, workspace
 from hipeac_agents.agents.vision_watch.state import VisionWatchState
 from hipeac_agents.services.factory import load_services_async
 
@@ -131,6 +134,63 @@ async def _snapshot_feeds(data_dir: str | None) -> int:
     for source_id, count in sorted(held.items()):
         print(f"  {source_id}: {count} entries held this week")
     print(f"snapshot: {len(held)} feeds captured")
+    return 0
+
+
+async def _replay_gate(
+    first: str | None, last: str | None, dry_run: bool, apply: str | None, data_dir: str | None
+) -> int:
+    """Replay the current gate over recorded weeks, or install a reviewed replay.
+
+    :param first: The first week to replay (``--from``).
+    :param last: The last week to replay (``--to``).
+    :param dry_run: Only print the planned judgement calls.
+    :param apply: A reviewed replay folder to swap into the workspace.
+    :param data_dir: Optional workspace-root override.
+    :returns: The exit code.
+    """
+    from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
+    from hipeac_agents.services.factory import Services
+
+    _use_data_dir(data_dir)
+    _init_sentry()
+
+    if not dry_run and not _llm_configured():
+        print("no LLM provider configured (set OPENAI_API_KEY)", file=sys.stderr)
+        return 1
+
+    if apply:
+        weeks = replay.install_replay(Path(apply))
+        print(f"installed {len(weeks)} replayed weeks; archived evidence-v1/ and clusters-v1/")
+        compiled = graph.build_graph(["cluster"], Services(crawl=None, mail=None, vision=None), *_build_llms())
+        for week in weeks:
+            await compiled.ainvoke(VisionWatchState(week=week))
+            print(f"  {week}: re-clustered")
+        return 0
+
+    if not (first and last):
+        print("replay-gate needs --from and --to week labels (e.g. --from 2026-W26 --to 2026-W39)", file=sys.stderr)
+        return 2
+
+    weeks = replay.weeks_between(first, last)
+    candidates = {week: replay.recorded_candidates(week)[0] for week in weeks}
+    calls = replay.plan_calls(candidates)
+    print(f"replay {first}..{last}: {calls}")
+    if dry_run:
+        return 0
+
+    judgement, _prose = _build_llms()
+    ctx = HarvestContext(judgement)
+    themes, catalog = workspace.read_themes(), workspace.read_source_catalog()
+    results = []
+    for week in weeks:
+        findings_file, rejected_file, replayed = await replay.replay_week(ctx, week, themes, catalog)
+        results.append((week, findings_file, rejected_file, replayed))
+        print(f"  {week}: {len(findings_file.findings)} findings")
+
+    report = replay.render_report([(w, f, c) for w, f, _r, c in results], themes, calls)
+    folder = replay.write_replay([(w, f, r) for w, f, r, _c in results], report, f"{first}_{last}")
+    print(f"replay written to {folder} — review report.md, then: replay-gate --apply {folder}")
     return 0
 
 
@@ -273,10 +333,23 @@ async def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="hipeac_agents")
     parser.add_argument(
         "command",
-        choices=["weekly-harvest", "weekly-digest", "monthly-digest", "simulate-harvest", "snapshot-feeds"],
+        choices=[
+            "weekly-harvest",
+            "weekly-digest",
+            "monthly-digest",
+            "simulate-harvest",
+            "snapshot-feeds",
+            "replay-gate",
+        ],
     )
     parser.add_argument("--on", help="harvest / weekly-digest: run for the week containing this ISO date")
     parser.add_argument("--month", help="monthly-digest: calendar month to synthesise, e.g. 2026-07")
+    parser.add_argument("--from", dest="first", help="replay-gate: first week label, e.g. 2026-W26")
+    parser.add_argument("--to", dest="last", help="replay-gate: last week label, e.g. 2026-W39")
+    parser.add_argument("--dry-run", action="store_true", help="replay-gate: only print the planned judgement calls")
+    parser.add_argument(
+        "--apply", help="replay-gate: install a reviewed replay folder (archives evidence and clusters)"
+    )
     parser.add_argument("--data-dir", help="workspace-root override (default: HIPEAC_AGENTS_DATA_DIR)")
     parser.add_argument("--limit", type=int, help="harvest: check at most N due sources (cheap partial runs)")
     parser.add_argument("--only", help="harvest: comma-separated source ids to check")
@@ -297,6 +370,9 @@ async def main(argv: list[str] | None = None) -> int:
 
     if args.command == "snapshot-feeds":
         return await _snapshot_feeds(args.data_dir)
+
+    if args.command == "replay-gate":
+        return await _replay_gate(args.first, args.last, args.dry_run, args.apply, args.data_dir)
 
     if args.command == "simulate-harvest" and not args.on:
         parser.error("simulate-harvest requires --on YYYY-MM-DD (e.g. --on 2026-06-26 for a Friday-evening run)")

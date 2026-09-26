@@ -274,7 +274,7 @@ class TestGateCandidateSummary:
         )
 
     async def test_verdict_one_liner_preferred_over_raw_summary(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import _gate_candidates
+        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import gate_candidates
         from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
         from hipeac_agents.agents.vision_watch.nodes.harvest.models import GateVerdict
         from tests.agents.vision_watch._fakes import FakeCrawl, FakeLLM
@@ -287,7 +287,7 @@ class TestGateCandidateSummary:
 
         from hipeac_agents.services.factory import Services
 
-        findings, _ = await _gate_candidates(
+        findings, _ = await gate_candidates(
             ctx,
             Services(crawl=crawl, mail=None, vision=None),
             [self._candidate(raw)],
@@ -303,7 +303,7 @@ class TestGateCandidateSummary:
         assert findings[0].summary == one_liner
 
     async def test_raw_summary_falls_back_when_verdict_skips_it(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import _gate_candidates
+        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import gate_candidates
         from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
         from hipeac_agents.agents.vision_watch.nodes.harvest.models import GateVerdict
         from tests.agents.vision_watch._fakes import FakeCrawl, FakeLLM
@@ -315,7 +315,7 @@ class TestGateCandidateSummary:
 
         from hipeac_agents.services.factory import Services
 
-        findings, _ = await _gate_candidates(
+        findings, _ = await gate_candidates(
             ctx,
             Services(crawl=crawl, mail=None, vision=None),
             [self._candidate(raw)],

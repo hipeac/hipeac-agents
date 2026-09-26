@@ -2,7 +2,7 @@
 
 Channels: feeds, arXiv, scraped pages, newsletters, the unattributed inbox,
 board tips, and the general sweep (one date-bounded web search per watch
-question). The gate (``_gate_candidates``) is shared by all of them.
+question). The gate (``gate_candidates``) is shared by all of them.
 """
 
 import logging
@@ -92,7 +92,7 @@ def _pre_gate(
     return None
 
 
-async def _gate_candidates(
+async def gate_candidates(
     ctx: HarvestContext,
     services: Services,
     candidates: list[CandidateItem],
@@ -408,7 +408,7 @@ async def harvest_feed_source(
     if oldest is not None and oldest > window_start and not snapshot:
         flags.append("feed_truncated")
 
-    verified, rejected = await _gate_candidates(
+    verified, rejected = await gate_candidates(
         ctx, services, candidates, source, window_start, window_end, prior, themes, source.id, "direct"
     )
 
@@ -529,7 +529,7 @@ async def harvest_arxiv_source(
         await asyncio.sleep(3)  # arXiv API etiquette: one request every three seconds
 
     known = {c.url: ScrapeResult(url=c.url, title=c.title, markdown=c.summary) for c in candidates}
-    verified, rejected = await _gate_candidates(
+    verified, rejected = await gate_candidates(
         ctx,
         services,
         candidates,
@@ -594,7 +594,7 @@ async def harvest_web_source(
         return [], [], SourceOutcome(source_id=source.id, status="failed", detail=f"scrape failed: {source.url}")
 
     candidates = (await ctx.extract_candidates(page.markdown)).items
-    verified, rejected = await _gate_candidates(
+    verified, rejected = await gate_candidates(
         ctx, services, candidates, source, window_start, window_end, prior, themes, source.id, "firecrawl"
     )
 
@@ -658,7 +658,7 @@ async def harvest_newsletter_source(
                 resolved_url = page.url or candidate.url
             candidates.append(_dated_by_message(candidate.model_copy(update={"url": resolved_url}), message))
 
-    verified, gated_rejects = await _gate_candidates(
+    verified, gated_rejects = await gate_candidates(
         ctx, services, candidates, source, window_start, window_end, prior, themes, source.id, "newsletter"
     )
     rejected.extend(gated_rejects)
@@ -706,7 +706,7 @@ async def harvest_inbox_unattributed(
         body = message.text or (await _fetch_body(services, message))
         candidates.extend(_dated_by_message(c, message) for c in (await ctx.extract_candidates(body)).items)
 
-    verified, rejected = await _gate_candidates(
+    verified, rejected = await gate_candidates(
         ctx, services, candidates, None, window_start, window_end, prior, themes, "inbox", "newsletter"
     )
     return (
@@ -815,7 +815,7 @@ async def harvest_board_tips(
             candidates[0] if candidates else CandidateItem(title=message.subject, url=page.url if page else links[0])
         )
         candidate = candidate.model_copy(update={"url": page.url if page else links[0]})
-        findings, rejects = await _gate_candidates(
+        findings, rejects = await gate_candidates(
             ctx,
             services,
             [candidate],
@@ -918,7 +918,7 @@ async def harvest_sweep(
                 extracted = [CandidateItem(title=hit.title, url=hit.url, summary=hit.description)]
             candidates.extend(c.model_copy(update={"url": c.url or hit.url}) for c in extracted)
 
-        findings, rejects = await _gate_candidates(
+        findings, rejects = await gate_candidates(
             ctx, services, candidates, None, window_start, window_end, prior, themes, "sweep", "sweep", triaged=True
         )
         verified.extend(findings)

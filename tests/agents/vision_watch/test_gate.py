@@ -46,7 +46,7 @@ def _drop(*indices: int):
 
 
 async def _gate(llm, crawl, candidates, themes, **kwargs):
-    return await channels._gate_candidates(
+    return await channels.gate_candidates(
         HarvestContext(llm),
         Services(crawl=crawl, mail=None, vision=None),
         candidates,
