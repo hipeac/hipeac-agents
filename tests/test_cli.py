@@ -213,3 +213,14 @@ class TestRunSummary:
         await cli.main(["weekly-digest", "--data-dir", str(data_dir)])
 
         assert "week 2026-W24: findings=1 rejected=2" in capsys.readouterr().out
+
+
+class TestRedo:
+    async def test_digest_redo_sets_the_week_aside_before_running(self, monkeypatch, fake_graph, data_dir, capsys):
+        _freeze_today(monkeypatch, date(2026, 6, 13))
+        workspace.write_weekly_digest("2026-W24", "# old\n", data_dir)
+
+        await cli.main(["weekly-digest", "--redo", "--data-dir", str(data_dir)])
+
+        assert workspace.read_weekly_digest("2026-W24", data_dir) is None
+        assert "set aside for a redo" in capsys.readouterr().out

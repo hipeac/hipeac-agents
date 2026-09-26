@@ -23,10 +23,14 @@ The workspace rules are enforced as code, not convention:
    cluster logs, and both only ever add — never edit or remove. A reader
    derives momentum, reach, and persistence by tallying entries at read time;
    no such field is ever stored.
+3. The one sanctioned exception is ``purge_week``: an operator-invoked redo
+   (``--redo``) that moves a week's files into ``_backup/`` and removes that
+   week's cluster entries, after backing the logs up.
 """
 
 import json
 import re
+import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -438,6 +442,65 @@ def append_cluster_entry(theme: str, cluster_id: str, entry: schemas.ClusterEntr
     (clusters_dir(data_dir) / cluster_filename(theme)).write_text(log.model_dump_json(indent=2), encoding="utf-8")
 
 
+def week_cluster_entry_count(week: str, data_dir: str | None = None) -> int:
+    """Count the cluster entries recorded for a week, across every theme's log.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The number of entries whose week is ``week``.
+    """
+    count = 0
+    for path in sorted(clusters_dir(data_dir).glob("*-clusters.json")):
+        log = schemas.ClusterLog.model_validate_json(path.read_text(encoding="utf-8"))
+        count += sum(1 for cluster in log.clusters for entry in cluster.entries if entry.week == week)
+    return count
+
+
+def purge_week(week: str, keep_evidence: bool, data_dir: str | None = None) -> Path:
+    """Set a week aside so it can be redone: the one sanctioned non-append edit.
+
+    Moves the week's weekly digest and grouping plan (and, unless
+    ``keep_evidence``, its whole evidence folder) into
+    ``_backup/<week>-<timestamp>/``, backs up every cluster log that has
+    entries for the week, then removes those entries — dropping clusters
+    left empty. Finding ids are reused when a week is harvested again, so
+    leaving old entries behind would point them at different findings.
+    A digest's sent marker stays: a redone week is never mailed twice.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param keep_evidence: Keep ``findings.json`` / ``rejected.json`` (a digest redo).
+    :param data_dir: Optional workspace-root override.
+    :returns: The backup directory.
+    """
+    backup = workspace_root(data_dir) / "_backup" / f"{week}-{datetime.now(UTC):%Y%m%dT%H%M%S}"
+    backup.mkdir(parents=True)
+
+    def _move(path: Path, relative: str) -> None:
+        if path.exists():
+            target = backup / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(path, target)
+
+    if keep_evidence:
+        _move(grouping_path(week, data_dir), f"evidence/{week}/grouping.json")
+    else:
+        _move(week_dir(week, data_dir), f"evidence/{week}")
+    _move(weekly_digest_dir(data_dir) / digest_filename(week), f"digests/weekly/{digest_filename(week)}")
+
+    for path in sorted(clusters_dir(data_dir).glob("*-clusters.json")):
+        log = schemas.ClusterLog.model_validate_json(path.read_text(encoding="utf-8"))
+        if not any(entry.week == week for cluster in log.clusters for entry in cluster.entries):
+            continue
+        (backup / "clusters").mkdir(exist_ok=True)
+        shutil.copy2(path, backup / "clusters" / path.name)
+        for cluster in log.clusters:
+            cluster.entries = [entry for entry in cluster.entries if entry.week != week]
+        log.clusters = [cluster for cluster in log.clusters if cluster.entries]
+        path.write_text(log.model_dump_json(indent=2), encoding="utf-8")
+
+    return backup
+
+
 # --------------------------------------------------------------------------- #
 # Digests
 # --------------------------------------------------------------------------- #
@@ -629,6 +692,7 @@ __all__ = [
     "mark_monthly_digest_sent",
     "mark_weekly_digest_sent",
     "monthly_digest_sent",
+    "purge_week",
     "monthly_digest_dir",
     "monthly_digest_filename",
     "read_all_findings",
@@ -646,6 +710,7 @@ __all__ = [
     "weekly_digest_dir",
     "weekly_digest_sent",
     "weekly_label",
+    "week_cluster_entry_count",
     "week_dir",
     "workspace_root",
     "write_findings_file",

@@ -61,6 +61,14 @@ async def harvest_node(
             ],
         }
 
+    # Finding ids are reused when a week is harvested again, so entries left
+    # from an earlier harvest would point at different findings. Refuse
+    # before spending anything; ``--redo`` sets the week aside properly.
+    if stale := workspace.week_cluster_entry_count(state.week):
+        raise workspace.WorkspaceError(
+            f"week {state.week} still has {stale} cluster entries from an earlier harvest; rerun with --redo"
+        )
+
     ctx = HarvestContext(llm)
     window_start = state.window_start or date.today()
     window_end = state.window_end or window_start

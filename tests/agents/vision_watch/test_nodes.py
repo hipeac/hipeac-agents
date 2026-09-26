@@ -136,6 +136,43 @@ class TestHarvestNode:
         assert not llm.calls, "a recorded week must cost no LLM calls"
         assert not crawl.scrape_calls, "a recorded week must cost no scrapes"
 
+    async def test_refuses_to_harvest_over_stale_cluster_entries(self, data_dir, llm, weekly_catalog):
+        """Regression (baseline B3): finding ids are reused on a re-harvest, so
+        entries left from the earlier harvest would point at other findings."""
+        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        workspace.append_cluster(
+            Cluster(
+                id="humanoid-deployment",
+                name="Humanoids",
+                opened="2026-W24",
+                entries=[
+                    ClusterEntry(
+                        week="2026-W24",
+                        finding_id="f-2026-W24-01",
+                        source_id="robot-report",
+                        source_class="aggregators",
+                        tier=2,
+                        region="global",
+                        date=date(2026, 6, 9),
+                        note="Old.",
+                        url="https://example.com/old",
+                    )
+                ],
+            ),
+            theme="physical-ai",
+            created=date(2026, 6, 12),
+        )
+        crawl = FakeCrawl()
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+
+        with pytest.raises(workspace.WorkspaceError, match="--redo"):
+            await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
+
+        assert not crawl.scrape_calls
+        assert not llm.calls
+
     async def test_unverifiable_url_rejected(self, data_dir, llm, weekly_catalog):
         llm.handlers[CandidateList] = make_candidate_handler(
             [

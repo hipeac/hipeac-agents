@@ -293,3 +293,50 @@ class TestConfig:
         weeks = workspace.list_weeks(data_dir)
 
         assert weeks == ["2026-W23", week]
+
+
+class TestPurgeWeek:
+    """``--redo``: the one sanctioned non-append edit, always backed up."""
+
+    @pytest.fixture
+    def recorded_week(self, data_dir, findings_file, cluster, week):
+        workspace.write_findings_file(findings_file, data_dir)
+        workspace.write_grouping_plan(week, '{"assignments": []}', data_dir)
+        workspace.write_weekly_digest(week, "# digest\n", data_dir)
+        workspace.append_cluster(cluster, "physical-ai", date(2026, 6, 11), data_dir)
+        later = cluster.model_copy(deep=True)
+        later.id = "long-running"
+        later.entries[0].week = "2026-W23"
+        later.entries[0].finding_id = "f-2026-W23-01"
+        later_entry = later.entries[0].model_copy(update={"week": week, "finding_id": "f-2026-W24-02"})
+        later.entries.append(later_entry)
+        workspace.append_cluster(later, "physical-ai", date(2026, 6, 11), data_dir)
+        return week
+
+    def test_harvest_redo_sets_evidence_digest_and_entries_aside(self, data_dir, recorded_week):
+        backup = workspace.purge_week(recorded_week, keep_evidence=False, data_dir=data_dir)
+
+        assert workspace.read_findings_file(recorded_week, data_dir) is None
+        assert workspace.read_weekly_digest(recorded_week, data_dir) is None
+        assert workspace.week_cluster_entry_count(recorded_week, data_dir) == 0
+        log = workspace.read_cluster_log("physical-ai", data_dir)
+        assert [c.id for c in log.clusters] == ["long-running"], "a cluster left empty is dropped"
+        assert [e.week for e in log.clusters[0].entries] == ["2026-W23"], "other weeks are untouched"
+        assert (backup / "evidence" / recorded_week / "findings.json").exists()
+        assert (backup / "digests" / "weekly" / f"digest-{recorded_week}.md").exists()
+        assert (backup / "clusters" / "physical-ai-clusters.json").exists()
+
+    def test_digest_redo_keeps_the_evidence(self, data_dir, recorded_week):
+        backup = workspace.purge_week(recorded_week, keep_evidence=True, data_dir=data_dir)
+
+        assert workspace.read_findings_file(recorded_week, data_dir) is not None
+        assert workspace.read_grouping_plan(recorded_week, data_dir) is None
+        assert workspace.read_weekly_digest(recorded_week, data_dir) is None
+        assert (backup / "evidence" / recorded_week / "grouping.json").exists()
+
+    def test_sent_marker_stays_so_a_redone_week_is_never_mailed_twice(self, data_dir, recorded_week):
+        workspace.mark_weekly_digest_sent(recorded_week, "m-1", data_dir)
+
+        workspace.purge_week(recorded_week, keep_evidence=True, data_dir=data_dir)
+
+        assert workspace.weekly_digest_sent(recorded_week, data_dir)

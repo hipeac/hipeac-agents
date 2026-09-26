@@ -2,8 +2,8 @@
 
 Usage::
 
-    ./run python -m hipeac_agents weekly-harvest
-    ./run python -m hipeac_agents weekly-digest [--send]
+    ./run python -m hipeac_agents weekly-harvest [--redo]
+    ./run python -m hipeac_agents weekly-digest [--send] [--redo]
     ./run python -m hipeac_agents monthly-digest --month 2026-07 [--send]
     ./run python -m hipeac_agents simulate-harvest --on 2026-06-26 [--limit 4] [--skip-sweep]
 
@@ -122,6 +122,7 @@ async def _run(
     skip_sweep: bool = False,
     send: bool = False,
     month: str | None = None,
+    redo: bool = False,
 ) -> int:
     """Run one graph invocation against the configured workspace.
 
@@ -136,6 +137,8 @@ async def _run(
     :param source_only: Only check these source ids.
     :param skip_sweep: Drop the general sweep (cheap partial runs).
     :param send: Send the composed digest by email (opt-in).
+    :param month: The calendar month for a monthly run.
+    :param redo: Set the week's files aside first, so it is redone from scratch.
     :returns: The exit code.
     """
     if data_dir:
@@ -180,6 +183,10 @@ async def _run(
     if not _llm_configured():
         print("no LLM provider configured (set OPENAI_API_KEY)", file=sys.stderr)
         return 1
+
+    if redo:
+        backup = workspace.purge_week(week, keep_evidence="harvest" not in nodes)
+        print(f"week {week} set aside for a redo; backup in {backup}")
 
     compiled = graph.build_graph(nodes, services, *_build_llms())
     result = await compiled.ainvoke(
@@ -247,6 +254,11 @@ async def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--only", help="harvest: comma-separated source ids to check")
     parser.add_argument("--skip-sweep", action="store_true", help="harvest: drop the general sweep")
     parser.add_argument(
+        "--redo",
+        action="store_true",
+        help="harvest / weekly-digest: back the week up and redo it (clears its cluster entries)",
+    )
+    parser.add_argument(
         "--send",
         action="store_true",
         help="digest: email the composed digest to the board list (default: compose and write only)",
@@ -276,6 +288,7 @@ async def main(argv: list[str] | None = None) -> int:
             source_limit=args.limit,
             source_only=args.only.split(",") if args.only else None,
             skip_sweep=args.skip_sweep,
+            redo=args.redo,
         )
 
     if args.command == "weekly-digest":
@@ -284,6 +297,7 @@ async def main(argv: list[str] | None = None) -> int:
             window=window,
             data_dir=args.data_dir,
             send=args.send,
+            redo=args.redo,
         )
 
     if args.command == "monthly-digest":
