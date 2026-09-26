@@ -8,16 +8,16 @@ There is no web service and no database: agents read and write plain file under 
 
 ### vision-watch
 
-A forward-looking signal detector for the [HiPEAC Vision](https://www.hipeac.net/vision/) editorial board: it watches the technology landscape and mails a weekly digest of what is brewing — new advances, legislation and programmes in the pipeline, dependencies and risks — framed as movement on the open questions the next Vision must answer.
+A forward-looking signal detector for the [HiPEAC Vision](https://www.hipeac.net/vision/) editorial board: it watches the technology landscape and mails a weekly digest of what is brewing — new advances, legislation and programmes in the pipeline, dependencies and risks — read as signals inside the Vision's broad lines (its themes).
 
 The pipeline is `harvest -> health` and `cluster -> digest`, with a separate `monthly` node for the month-end synthesis:
 
 | Node      | What it does                                                                                                                    |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `harvest` | Collects from the source catalog, arXiv, the tips mailbox and a web sweep; triages and judges each candidate against the questions |
+| `harvest` | Collects from the source catalog, arXiv, the tips mailbox and a web sweep; triages and judges each candidate against the themes |
 | `health`  | Labels every source (failing, empty, stale, silent…) and emails the dev list when the picture changes                         |
-| `cluster` | Groups findings into cross-week clusters, one file per question, append-only                                                    |
-| `digest`  | Composes the weekly markdown digest (lead, what's brewing, movement per question) and mails it                                  |
+| `cluster` | Groups findings into cross-week clusters, one file per theme, append-only                                                    |
+| `digest`  | Composes the weekly markdown digest (lead, what's brewing, movement per theme) and mails it                                  |
 | `monthly` | Synthesises a calendar month from the weekly evidence                                                                           |
 
 The editorial week runs **Saturday through Friday**; a digest is labelled by the ISO week of its closing Friday, e.g. `2026-W37`. Without `--on`, a run targets the most recently closed week: on a Saturday, the week that ended the day before.
@@ -64,7 +64,7 @@ A digest composed without `--send` can be reviewed and sent later with `--send`;
 ```
 config/                 themes.yaml, source-catalog.yaml (human-owned)
 evidence/<week>/        findings.json, rejected.json, grouping.json, sources.json, health.json/.md (write-once)
-clusters/               one file per question, append-only, cross-week
+clusters/               one file per theme, append-only, cross-week
 digests/weekly/         digest-YYYY-Www.md (write-once) and its .sent.json marker
 digests/monthly/        digest-YYYY-MM.md (write-once) and its .sent.json marker
 cache/scrapes/          content-addressed crawl cache
@@ -74,7 +74,7 @@ _backup/                weeks set aside by --redo
 
 The themes and the source catalog are **editorial input, owned by a human** — the agent never rewrites them. Evidence and digests are write-once: redo a week with `--redo`, which backs everything up first.
 
-`themes.yaml` lists **watch questions**: each has an id, a `question`, `why` it matters, what to `look_for` (real-world names: programmes, companies, laws — news never uses the Vision's vocabulary) and a distinct `sweep_query`. An item is relevant when it moves a question.
+`themes.yaml` lists the Vision's broad lines: each theme has an id, a plain-words `description`, the open `questions` the next Vision asks in it, what to `look_for` (real-world names: programmes, companies, laws — news never uses the Vision's vocabulary), optional `keywords` as hints, and a distinct `sweep_query`. An item is relevant when it is a signal inside a theme.
 
 `source-catalog.yaml` groups sources under their class, which sets their default `tier` (a confidence ceiling) and `independence`:
 
