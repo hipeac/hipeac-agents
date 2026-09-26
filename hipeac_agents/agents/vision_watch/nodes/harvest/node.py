@@ -153,9 +153,12 @@ async def harvest_node(
     else:
         sweep = await harvest_sweep(ctx, services, themes, window_start, window_end, prior)
 
-    for result in (*web_results, *newsletter_results, inbox_result, tips, sweep):
+    channel_ids = [s.id for s in web_sources] + [s.id for s in newsletter_sources] + ["inbox", "board-tip", "sweep"]
+    for source_id, result in zip(
+        channel_ids, (*web_results, *newsletter_results, inbox_result, tips, sweep), strict=True
+    ):
         if isinstance(result, BaseException):
-            outcomes.append(SourceOutcome(source_id="unknown", status="failed", detail=repr(result)))
+            outcomes.append(SourceOutcome(source_id=source_id, status="failed", detail=repr(result)))
             continue
         verified.extend(result[0])
         rejected.extend(result[1])
@@ -382,10 +385,15 @@ async def _resample(crawl: Any, findings: list[Finding], rejected: list[Rejected
     :returns: The findings minus the ones that failed re-sampling.
     """
     sample = pick_resample(findings)
-    failures = await asyncio.gather(*(crawl.scrape(f.url, fresh=True) for f in sample))
+    # A provider error (credits ran out, timeout) says nothing about the link:
+    # keep the finding rather than lose the whole week's work at the last step.
+    fetched = await asyncio.gather(*(crawl.scrape(f.url, fresh=True) for f in sample), return_exceptions=True)
     drop: set[str] = set()
 
-    for finding, result in zip(sample, failures, strict=True):
+    for finding, result in zip(sample, fetched, strict=True):
+        if isinstance(result, BaseException):
+            logger.warning("re-sample of %s skipped: %r", finding.url, result)
+            continue
         if result is None:
             rejected.append(
                 RejectedItem(

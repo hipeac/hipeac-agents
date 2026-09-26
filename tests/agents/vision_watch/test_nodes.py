@@ -326,6 +326,49 @@ class TestHarvestNode:
         assert sweep_outcomes and sweep_outcomes[0].status == "collected"
         assert any(f.access_method == "sweep" and f.source_id == "sweep" for f in updates["findings"])
         assert any("physical-ai" in f.theme_ids for f in updates["findings"])
+        # Regression (baseline B13): the search is bounded to the harvested
+        # window, not to a literal "past week" that breaks backfills.
+        assert crawl.search_ranges and set(crawl.search_ranges) == {(date(2026, 6, 6), date(2026, 6, 12))}
+        assert not any("past week" in q for q in crawl.search_calls)
+
+    async def test_channel_error_is_reported_under_its_source(self, data_dir, llm, weekly_catalog):
+        """Regression (baseline B11): a raising channel was reported as ``unknown``."""
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        class RaisingCrawl(FakeCrawl):
+            async def scrape(self, url, fresh=False):
+                if url == "https://example.com/feed":
+                    raise RuntimeError("boom")
+                return await super().scrape(url, fresh)
+
+        state = VisionWatchState.model_construct(
+            week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12), skip_sweep=True
+        )
+
+        updates = await harvest_node_mod.harvest_node(state, services=_services(RaisingCrawl()), llm=llm)
+
+        outcome = next(o for o in updates["source_outcomes"] if o.source_id == "robot-report")
+        assert outcome.status == "failed"
+        assert "boom" in outcome.detail
+        assert not any(o.source_id == "unknown" for o in updates["source_outcomes"])
+
+    async def test_page_source_with_only_rejects_is_collected(self, data_dir, llm, weekly_catalog):
+        """Regression (baseline B22): a page source whose candidates were all
+        rejected read as ``empty``, like a source that yielded nothing."""
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        llm.handlers[CandidateList] = make_candidate_handler(
+            [{"title": "Old news", "url": "https://example.com/old", "date": "2026-01-01", "summary": "s"}]
+        )
+        crawl = FakeCrawl(pages={"https://example.com/feed": ("Feed", "Old news — https://example.com/old")})
+        state = VisionWatchState.model_construct(
+            week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12), skip_sweep=True
+        )
+
+        updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
+
+        outcome = next(o for o in updates["source_outcomes"] if o.source_id == "robot-report")
+        assert (outcome.status, outcome.rejected) == ("collected", 1)
 
 
 class TestClusterNode:
@@ -395,6 +438,22 @@ class TestClusterNode:
         assert log is not None and len(log.clusters) == 1
         assert log.clusters[0].id == "humanoid-deployment"
         assert log.clusters[0].entries[0].finding_id == "f-2026-W24-01"
+
+    async def test_assignment_to_unknown_cluster_is_reported_unmatched(self, llm, finding):
+        """Regression (baseline B14): a grouping that named a cluster id that
+        does not exist dropped the finding silently, counted as assigned."""
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        llm.handlers[GroupingPlan] = make_grouping_handler(
+            [{"finding_id": "f-2026-W24-01", "extends_cluster_id": "no-such-cluster"}]
+        )
+        self._write_findings(finding)
+
+        updates = await cluster_node_mod.cluster_node(
+            VisionWatchState(week="2026-W24"), services=Services(crawl=None, mail=None, vision=None), llm=llm
+        )
+
+        assert any("f-2026-W24-01" in note for note in updates["notes"])
 
     async def test_rerunning_the_same_week_is_a_no_op(self, llm, finding):
         """Re-running a week must recover from 'cluster exists' and 'entry
@@ -1479,6 +1538,41 @@ class TestResample:
         assert len(kept) == len(findings)
 
 
+class TestResampleProviderError:
+    async def test_provider_error_keeps_the_weeks_findings(self):
+        """Regression (baseline B12): running out of credits on the fresh
+        re-sample fetch aborted the harvest after all the collection work."""
+        from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node_mod
+        from hipeac_agents.agents.vision_watch.schemas import Finding
+        from hipeac_agents.services.crawl import ScrapeQuotaError
+
+        class QuotaCrawl:
+            async def scrape(self, url, fresh=False):
+                raise ScrapeQuotaError("Insufficient credits")
+
+        findings = [
+            Finding.model_validate(
+                {
+                    "id": f"f-2026-W24-0{i}",
+                    "date": "2026-06-09",
+                    "title": f"t{i}",
+                    "url": f"https://example.com/{i}",
+                    "source_id": "s",
+                    "region": "global",
+                    "tier": 2,
+                    "summary": "s",
+                }
+            )
+            for i in range(1, 7)
+        ]
+        rejected = []
+
+        kept = await harvest_node_mod._resample(QuotaCrawl(), findings, rejected)
+
+        assert len(kept) == len(findings)
+        assert not rejected
+
+
 class TestFeedChannel:
     @pytest.fixture(autouse=True)
     def _setup(self, data_dir, monkeypatch):
@@ -1550,7 +1644,7 @@ class TestFeedChannel:
         llm.handlers[GateVerdict] = make_gate_handler(["physical-ai"])
         crawl = FakeCrawl(
             pages={
-                "https://example.com/feed.xml": ("Feed", "link https://example.com/item"),
+                "https://example.com/site": ("Site", "link https://example.com/item"),
                 "https://example.com/item": ("Humanoid deployed", "Full item text."),
             }
         )
@@ -1559,5 +1653,7 @@ class TestFeedChannel:
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
 
         assert crawl.feed_calls == ["https://example.com/feed.xml"]
-        assert "https://example.com/feed.xml" in crawl.scrape_calls
+        # Regression (baseline B7): the fallback used to scrape the feed URL again.
+        assert "https://example.com/site" in crawl.scrape_calls
+        assert "https://example.com/feed.xml" not in crawl.scrape_calls
         assert len(updates["findings"]) == 1

@@ -62,6 +62,7 @@ class FakeCrawl:
         self.feeds = feeds or {}
         self.scrape_calls = []
         self.search_calls = []
+        self.search_ranges = []
         self.feed_calls = []
 
     async def scrape(self, url: str, fresh: bool = False):
@@ -70,8 +71,9 @@ class FakeCrawl:
             return None
         return ScrapeResult(url=url, title=self.pages[url][0], markdown=self.pages[url][1])
 
-    async def search(self, query: str, limit: int = 5):
+    async def search(self, query: str, limit: int = 5, since=None, until=None):
         self.search_calls.append(query)
+        self.search_ranges.append((since, until))
         if self.search_hits:
             return self.search_hits[:limit]
         return [SearchHit(url=f"https://example.com/{i}", title=query) for i in range(limit)]

@@ -6,6 +6,7 @@ default provider uses the official Firecrawl Python SDK over its plain API.
 """
 
 import asyncio
+from datetime import date
 from typing import Any, Protocol, runtime_checkable
 
 from hipeac_agents import settings
@@ -31,8 +32,10 @@ class CrawlClient(Protocol):
         """
         ...
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchHit]:
-        """Search the open web and return the hits."""
+    async def search(
+        self, query: str, limit: int = 5, since: date | None = None, until: date | None = None
+    ) -> list[SearchHit]:
+        """Search the open web and return the hits, optionally within a date range."""
         ...
 
     async def fetch_feed(self, url: str) -> str | None:
@@ -131,15 +134,28 @@ class FirecrawlCrawl:
             published_at=_page_published_at(document),
         )
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchHit]:
+    async def search(
+        self, query: str, limit: int = 5, since: date | None = None, until: date | None = None
+    ) -> list[SearchHit]:
         """Search the web and return normalised hits.
 
         :param query: The search query.
         :param limit: Maximum number of results.
+        :param since: Only results published on or after this day.
+        :param until: Only results published on or before this day.
         :returns: The search hits, empty when the search fails.
         """
+        tbs = None
+        if since or until:
+            bounds = ["cdr:1"]
+            if since:
+                bounds.append(f"cd_min:{since:%m/%d/%Y}")
+            if until:
+                bounds.append(f"cd_max:{until:%m/%d/%Y}")
+            tbs = ",".join(bounds)
+
         try:
-            data = await asyncio.to_thread(self._client.search, query, limit=limit)
+            data = await asyncio.to_thread(self._client.search, query, limit=limit, tbs=tbs)
         except Exception:
             return []
 
@@ -213,14 +229,18 @@ class CachedCrawl:
 
         return result
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchHit]:
+    async def search(
+        self, query: str, limit: int = 5, since: date | None = None, until: date | None = None
+    ) -> list[SearchHit]:
         """Search the web; pass-through to the wrapped client.
 
         :param query: The search query.
         :param limit: Maximum number of results.
+        :param since: Only results published on or after this day.
+        :param until: Only results published on or before this day.
         :returns: The search hits, empty when the search fails.
         """
-        return await self._client.search(query, limit=limit)
+        return await self._client.search(query, limit=limit, since=since, until=until)
 
     async def fetch_feed(self, url: str) -> str | None:
         """Fetch a feed; pass-through to the wrapped client, never cached.

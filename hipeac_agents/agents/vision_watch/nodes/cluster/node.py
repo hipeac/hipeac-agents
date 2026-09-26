@@ -129,7 +129,7 @@ async def cluster_node(
         plan = await _group_findings(llm, themes, cluster_index, findings)
         workspace.write_grouping_plan(week, plan.model_dump_json(indent=2))
 
-    assigned_ids = {a.finding_id for a in plan.assignments}
+    placed_ids: set[str] = set()
     extended_by_theme: dict[str, int] = {theme.theme: 0 for theme in themes}
     opened_by_theme: dict[str, int] = {theme.theme: 0 for theme in themes}
     reports: list[ClusterReport] = []
@@ -155,6 +155,8 @@ async def cluster_node(
             continue
 
         log = logs[theme_name]
+
+        placed_ids.add(finding.id)
 
         if assignment.extends_cluster_id and assignment.extends_cluster_id in cluster_index:
             try:
@@ -187,7 +189,7 @@ async def cluster_node(
         log = workspace.read_cluster_log(theme.theme) or logs[theme.theme]
         pairs = [(c, c.entries) for c in log.clusters]
         candidate_trends = [c.id for c, e in sort_ranked([(c, e) for c, e in pairs if is_candidate_trend(e)], catalog)]
-        theme_unmatched = [f.id for f in findings if theme.theme in f.theme_ids and f.id not in assigned_ids]
+        theme_unmatched = [f.id for f in findings if theme.theme in f.theme_ids and f.id not in placed_ids]
         reports.append(
             ClusterReport(
                 theme=theme.theme,
@@ -199,7 +201,7 @@ async def cluster_node(
             )
         )
 
-    unmatched = [f.id for f in findings if f.id not in assigned_ids]
+    unmatched = [f.id for f in findings if f.id not in placed_ids]
 
     if unmatched:
         notes.append(f"findings that joined no cluster: {', '.join(unmatched)}")

@@ -322,11 +322,10 @@ async def harvest_web_source(
             ),
         )
 
-    target = source.feed_url or source.url
-    page = await services.crawl.scrape(target)
+    page = await services.crawl.scrape(source.url)
 
     if page is None or not page.markdown:
-        return [], [], SourceOutcome(source_id=source.id, status="failed", detail=f"scrape failed: {target}")
+        return [], [], SourceOutcome(source_id=source.id, status="failed", detail=f"scrape failed: {source.url}")
 
     candidates = (await ctx.extract_candidates(page.markdown)).items
     verified: list[Finding] = []
@@ -345,7 +344,7 @@ async def harvest_web_source(
         _log_outcome(
             SourceOutcome(
                 source_id=source.id,
-                status="collected" if verified else "empty",
+                status="collected" if verified or rejected else "empty",
                 verified=len(verified),
                 rejected=len(rejected),
             )
@@ -608,7 +607,7 @@ async def harvest_sweep(
     """Run the general sweep: one web search per theme, gated as usual.
 
     Catches developments from sources not yet in the catalog. Each search is
-    bounded to the harvest window by its query; hits that miss every theme
+    bounded to the harvest window by a date range; hits that miss every theme
     keyword are skipped as search noise, everything else goes through the
     full verification gate with ``source_id: "sweep"``.
 
@@ -629,7 +628,7 @@ async def harvest_sweep(
 
     for theme in themes:
         query = theme.sweep_query or ", ".join(theme.keywords[:6])
-        hits = await services.crawl.search(f"{query} past week", limit=5)
+        hits = await services.crawl.search(query, limit=5, since=window_start, until=window_end)
 
         for hit in hits:
             if hit.url in {f.url for f in verified} or keyword_hits(f"{hit.title} {hit.description}", keywords) == 0:
