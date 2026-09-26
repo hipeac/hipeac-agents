@@ -429,8 +429,3 @@ def _independence_share(entries: list[ClusterEntry]) -> float:
 
     low = sum(1 for entry in entries if independence.get(entry.source_id) == "low")
     return low / len(entries)
-
-
-def _catalog():
-    """Read the source catalog, for ranking and independence."""
-    return workspace.read_source_catalog()

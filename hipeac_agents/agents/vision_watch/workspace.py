@@ -284,22 +284,6 @@ def read_all_findings(data_dir: str | None = None) -> list[schemas.FindingsFile]
     return files
 
 
-def read_recent_findings(count: int = 2, data_dir: str | None = None) -> list[schemas.FindingsFile]:
-    """Read the most recent findings files (for duplicate detection).
-
-    :param count: How many recent weeks to read.
-    :param data_dir: Optional workspace-root override.
-    :returns: The parsed findings files, oldest first.
-    """
-    files = []
-
-    for week in list_weeks(data_dir)[-count:]:
-        if file := read_findings_file(week, data_dir):
-            files.append(file)
-
-    return files
-
-
 def write_rejected_file(file: schemas.RejectedFile, data_dir: str | None = None) -> Path:
     """Write the week's rejected-audit file (write-once)."""
     return write_once(rejected_path(file.week, data_dir), file.model_dump_json(indent=2))
@@ -332,36 +316,6 @@ def _read_cluster_log(theme: str, data_dir: str | None) -> schemas.ClusterLog:
         raise WorkspaceError(f"cluster log for theme '{theme}' does not exist yet")
 
     return schemas.ClusterLog.model_validate_json(path.read_text(encoding="utf-8"))
-
-
-def _ensure_log_is_superset(existing: schemas.ClusterLog, proposed: schemas.ClusterLog) -> None:
-    """Check a proposed cluster-log write only ever adds clusters and entries.
-
-    :param existing: The log currently on disk.
-    :param proposed: The log about to be written.
-    :raises WorkspaceError: If an existing entry or cluster was edited or
-        removed (append-only violation).
-    """
-    by_id = {cluster.id: cluster for cluster in existing.clusters}
-
-    for cluster in proposed.clusters:
-        prior = by_id.get(cluster.id)
-
-        if prior is None:
-            continue
-
-        if cluster.name != prior.name or cluster.opened != prior.opened:
-            raise WorkspaceError(f"cluster '{cluster.id}' header may not be edited")
-
-        prior_ids = [entry.finding_id for entry in prior.entries]
-        proposed_ids = [entry.finding_id for entry in cluster.entries]
-
-        if len(proposed_ids) < len(prior_ids):
-            raise WorkspaceError(f"cluster '{cluster.id}' entries may not be removed")
-
-        for old_id, new_id in zip(prior_ids, proposed_ids, strict=True):
-            if old_id != new_id:
-                raise WorkspaceError(f"cluster '{cluster.id}' entries may not be reordered or edited")
 
 
 def read_cluster_log(theme: str, data_dir: str | None = None) -> schemas.ClusterLog | None:
@@ -529,16 +483,6 @@ def read_weekly_digest(week: str, data_dir: str | None = None) -> str | None:
     return path.read_text(encoding="utf-8") if path.exists() else None
 
 
-def read_latest_weekly_digest(data_dir: str | None = None) -> str | None:
-    """Read the most recent weekly digest, for "last digest" context.
-
-    :param data_dir: Optional workspace-root override.
-    :returns: The latest digest markdown, or ``None`` if none exists.
-    """
-    digests = sorted(weekly_digest_dir(data_dir).glob("digest-*.md"))
-    return digests[-1].read_text(encoding="utf-8") if digests else None
-
-
 def _sent_marker(digest_path: Path) -> Path:
     return digest_path.with_suffix(".sent.json")
 
@@ -699,9 +643,7 @@ __all__ = [
     "read_cluster_log",
     "read_grouping_plan",
     "read_findings_file",
-    "read_latest_weekly_digest",
     "read_monthly_digest",
-    "read_recent_findings",
     "read_rejected_file",
     "read_weekly_digest",
     "read_source_catalog",

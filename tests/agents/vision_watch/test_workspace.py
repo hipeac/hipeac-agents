@@ -12,7 +12,6 @@ from hipeac_agents.agents.vision_watch import workspace
 from hipeac_agents.agents.vision_watch.schemas import (
     Cluster,
     ClusterEntry,
-    ClusterLog,
     Finding,
     FindingsFile,
     RejectedFile,
@@ -204,35 +203,6 @@ class TestClusterLog:
         with pytest.raises(workspace.EntryAlreadyRecordedError, match="url"):
             workspace.append_cluster_entry("physical-ai", "humanoid-deployment", same_url, data_dir)
 
-    def test_entry_never_edited_or_removed(self, data_dir, cluster, entry):
-        workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
-
-        # A reader rewriting the whole log with fewer entries must fail.
-        on_disk = workspace.read_cluster_log("physical-ai", data_dir)
-        on_disk.clusters[0].entries = []
-        path = workspace.clusters_dir(data_dir) / workspace.cluster_filename("physical-ai")
-        with pytest.raises(WorkspaceError):
-            workspace._ensure_log_is_superset(
-                ClusterLog.model_validate_json(path.read_text(encoding="utf-8")),
-                on_disk,
-            )
-
-    def test_cluster_header_never_edited(self, data_dir, cluster, entry):
-        workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
-        log = workspace.read_cluster_log("physical-ai", data_dir)
-        proposed = ClusterLog(
-            theme="physical-ai",
-            created=log.created,
-            clusters=[cluster.model_copy(update={"name": "Renamed"})],
-        )
-        path = workspace.clusters_dir(data_dir) / workspace.cluster_filename("physical-ai")
-
-        with pytest.raises(WorkspaceError, match="header"):
-            workspace._ensure_log_is_superset(
-                ClusterLog.model_validate_json(path.read_text(encoding="utf-8")),
-                proposed,
-            )
-
 
 class TestWeeklyDigest:
     def test_write_once(self, data_dir, week):
@@ -241,15 +211,6 @@ class TestWeeklyDigest:
         assert path.name == f"digest-{week}.md"
         with pytest.raises(WorkspaceError):
             workspace.write_weekly_digest(week, "# Again", data_dir)
-
-    def test_read_latest_returns_most_recent(self, data_dir):
-        workspace.write_weekly_digest("2026-W23", "older", data_dir)
-        workspace.write_weekly_digest("2026-W24", "newer", data_dir)
-
-        assert workspace.read_latest_weekly_digest(data_dir) == "newer"
-
-    def test_read_latest_none_when_empty(self, data_dir):
-        assert workspace.read_latest_weekly_digest(data_dir) is None
 
 
 class TestConfig:
