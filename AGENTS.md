@@ -29,8 +29,6 @@ A `./run` wrapper exists (`uv run --env-file .env "$@"`). **All project commands
 
 ## Commit conventions
 
-## Commit conventions
-
 Conventional Commits: `type(scope): description` — imperative, lowercase, no trailing period, one line, no attribution trailers. Types: `feat` / `fix` / `docs` / `refactor` / `test` / `chore` / `perf`. Breaking: `feat!:` / `BREAKING CHANGE:` footer. Never vague (`wip`, `update`).
 
 ## Git workflow
@@ -38,12 +36,14 @@ Conventional Commits: `type(scope): description` — imperative, lowercase, no t
 - Always branch from `main`. Never branch from another feature branch.
 - Branch naming: `type/short-description` in kebab-case (`feat/vision-watch-harvest`, `fix/cluster-threshold`).
 
+## Specs
+
+`openspec/specs/` is source of truth for behaviour; spec-driven changes via OpenSpec (`openspec/changes/`).
+
 ## Python
 
 - PEP 8; type hints on all signatures.
 - Docstrings (public functions/methods/modules): reST, Sphinx-compatible; no type info — it's in the signature; `:param` / `:returns` / `:raises` end with a period.
-
-### Testing (pytest)
 
 ### Testing (pytest)
 
