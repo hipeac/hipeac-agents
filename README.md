@@ -8,18 +8,19 @@ There is no web service and no database: agents read and write plain file under 
 
 ### vision-watch
 
-Tracks the technology landscape behind the [HiPEAC Vision](https://www.hipeac.net/vision/), and mails the editorial board a weekly digest of what actually moved.
+A forward-looking signal detector for the [HiPEAC Vision](https://www.hipeac.net/vision/) editorial board: it watches the technology landscape and mails a weekly digest of what is brewing — new advances, legislation and programmes in the pipeline, dependencies and risks — framed as movement on the open questions the next Vision must answer.
 
-The pipeline is `harvest -> cluster -> digest`, with a separate `monthly` node for the month-end synthesis:
+The pipeline is `harvest -> health` and `cluster -> digest`, with a separate `monthly` node for the month-end synthesis:
 
-| Node      | What it does                                                                                                                  |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `harvest` | Sweeps the source catalog and the tips mailbox, verifies each candidate against the themes, and records findings for the week |
-| `cluster` | Groups findings into cross-week clusters, one file per theme, append-only                                                     |
-| `digest`  | Composes the weekly markdown digest and mails it                                                                              |
-| `monthly` | Synthesises a calendar month from the weekly evidence                                                                         |
+| Node      | What it does                                                                                                                    |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `harvest` | Collects from the source catalog, arXiv, the tips mailbox and a web sweep; triages and judges each candidate against the questions |
+| `health`  | Labels every source (failing, empty, stale, silent…) and emails the dev list when the picture changes                         |
+| `cluster` | Groups findings into cross-week clusters, one file per question, append-only                                                    |
+| `digest`  | Composes the weekly markdown digest (lead, what's brewing, movement per question) and mails it                                  |
+| `monthly` | Synthesises a calendar month from the weekly evidence                                                                           |
 
-The editorial week runs **Saturday through Friday**; a digest is labelled by the ISO week of its closing Friday, e.g. `2026-W37`.
+The editorial week runs **Saturday through Friday**; a digest is labelled by the ISO week of its closing Friday, e.g. `2026-W37`. Without `--on`, a run targets the most recently closed week: on a Saturday, the week that ended the day before.
 
 Judgement-free logic — gates, tallies, thresholds, ranking — is plain deterministic Python, callable without an LLM. Prompts are reserved for genuine judgement: relevance, tiering, grouping, prose.
 
@@ -34,17 +35,19 @@ cp .env.example .env    # then fill in the keys you need
 Every command goes through the `./run` wrapper, which loads `.env` and invokes `uv run`, resolving dependencies on first use.
 
 ```sh
-./run python -m hipeac_agents weekly-harvest
+./run python -m hipeac_agents weekly-harvest            # Friday evening or later
 ./run python -m hipeac_agents weekly-digest
 ./run python -m hipeac_agents monthly-digest --month 2026-08
+./run python -m hipeac_agents snapshot-feeds            # daily, so busy feeds keep their whole week
 ```
 
 Useful flags:
 
 | Flag              | Effect                                                |
 | ----------------- | ----------------------------------------------------- |
-| `--on 2026-09-11` | Run as if it were this date (backfilling a past week) |
-| `--send`          | Email the composed digest to the board list (opt-in)  |
+| `--on 2026-09-11` | Run for the week containing this date (backfilling)   |
+| `--send`          | Digest: email the board. Harvest: email source-health changes to the dev list (opt-in) |
+| `--redo`          | Back the week up and redo it (clears its cluster entries) |
 | `--limit N`       | Check at most N sources — cheap partial harvests      |
 | `--only id1,id2`  | Check only these source ids                           |
 | `--skip-sweep`    | Drop the general per-theme search sweep               |
@@ -52,20 +55,44 @@ Useful flags:
 
 `simulate-harvest` is `weekly-harvest` with a mandatory `--on`, for replaying a past window.
 
+A digest composed without `--send` can be reviewed and sent later with `--send`; it is never sent twice.
+
 ## The data directory
 
 `HIPEAC_AGENTS_DATA_DIR` points at a workspace the repository does not carry:
 
 ```
 config/                 themes.yaml, source-catalog.yaml (human-owned)
-evidence/<week>/        findings.json, rejected.json (write-once)
-clusters/               one file per theme, append-only, cross-week
-digests/weekly/         digest-YYYY-Www.md (write-once)
-digests/monthly/        digest-YYYY-MM.md (write-once)
+evidence/<week>/        findings.json, rejected.json, grouping.json, sources.json, health.json/.md (write-once)
+clusters/               one file per question, append-only, cross-week
+digests/weekly/         digest-YYYY-Www.md (write-once) and its .sent.json marker
+digests/monthly/        digest-YYYY-MM.md (write-once) and its .sent.json marker
 cache/scrapes/          content-addressed crawl cache
+cache/feed-snapshots/   the open week's feed entries, captured daily
+_backup/                weeks set aside by --redo
 ```
 
-The themes and the source catalog are **editorial input, owned by a human** — the agent never rewrites them. Evidence and digests are write-once: re-running a week means deleting that week's files first, deliberately.
+The themes and the source catalog are **editorial input, owned by a human** — the agent never rewrites them. Evidence and digests are write-once: redo a week with `--redo`, which backs everything up first.
+
+`themes.yaml` lists **watch questions**: each has an id, a `question`, `why` it matters, what to `look_for` (real-world names: programmes, companies, laws — news never uses the Vision's vocabulary) and a distinct `sweep_query`. An item is relevant when it moves a question.
+
+`source-catalog.yaml` groups sources under their class, which sets their default `tier` (a confidence ceiling) and `independence`:
+
+```yaml
+classes:
+  programmes: {tier: 2, independence: high}
+sources:
+  programmes:
+    - {id: uk-aria, url: https://aria.org.uk/insights}
+  preprints:
+    - {id: arxiv-cs-ar, url: https://arxiv.org/list/cs.AR/new, arxiv: cs.AR}
+```
+
+The channel follows from the fields: `arxiv` (API, any date range), `feed_url` (RSS/Atom), otherwise the page is scraped; `senders` adds the newsletter channel and `web: false` makes it newsletter-only; `skip: <reason>` never checks the source.
+
+### Re-judging past weeks
+
+`replay-gate --from 2026-W26 --to 2026-W39 [--dry-run]` runs the current gate over recorded weeks, from what is on disk (no scraping), and writes the result plus a review `report.md` under `replay/`. After review, `replay-gate --apply <folder>` archives `evidence/` and `clusters/` as `-v1` and re-clusters the replayed weeks.
 
 A fresh clone therefore harvests nothing until you supply a `config/` directory of your own.
 
