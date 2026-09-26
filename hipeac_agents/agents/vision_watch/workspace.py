@@ -209,6 +209,51 @@ def cache_root(data_dir: str | None = None) -> Path:
     return workspace_root(data_dir) / "cache"
 
 
+def feed_snapshot_path(week: str, source_id: str, data_dir: str | None = None) -> Path:
+    """Return the path of one source's feed snapshot for a week.
+
+    Snapshots live under the cache, not the week's evidence: they are
+    mutable while the week is open, and a ``--redo`` must not discard them.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param source_id: The catalog source id.
+    :param data_dir: Optional workspace-root override.
+    :returns: ``cache/feed-snapshots/<week>/<source>.json`` as a ``Path``.
+    """
+    return cache_root(data_dir) / "feed-snapshots" / week / f"{source_id}.json"
+
+
+def read_feed_snapshot(week: str, source_id: str, data_dir: str | None = None) -> list:
+    """Read the feed entries captured for a source during a week.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param source_id: The catalog source id.
+    :param data_dir: Optional workspace-root override.
+    :returns: The captured candidates, empty when none were captured.
+    """
+    from hipeac_agents.agents.vision_watch.nodes.harvest.models import CandidateItem
+
+    path = feed_snapshot_path(week, source_id, data_dir)
+    if not path.exists():
+        return []
+    return [CandidateItem.model_validate(item) for item in json.loads(path.read_text(encoding="utf-8"))]
+
+
+def write_feed_snapshot(week: str, source_id: str, items: list, data_dir: str | None = None) -> Path:
+    """Replace a source's feed snapshot for a week (mutable while the week is open).
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param source_id: The catalog source id.
+    :param items: The candidates to keep.
+    :param data_dir: Optional workspace-root override.
+    :returns: The written path.
+    """
+    path = feed_snapshot_path(week, source_id, data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([item.model_dump() for item in items], indent=2), encoding="utf-8")
+    return path
+
+
 def cluster_filename(theme: str) -> str:
     """Return the cluster-log filename for a theme.
 
@@ -629,6 +674,7 @@ __all__ = [
     "create_cluster_log",
     "current_window",
     "digest_filename",
+    "feed_snapshot_path",
     "findings_dir",
     "findings_path",
     "grouping_path",
@@ -642,6 +688,7 @@ __all__ = [
     "read_all_findings",
     "read_cluster_log",
     "read_grouping_plan",
+    "read_feed_snapshot",
     "read_findings_file",
     "read_monthly_digest",
     "read_rejected_file",
@@ -652,6 +699,7 @@ __all__ = [
     "weekly_digest_dir",
     "weekly_digest_sent",
     "weekly_label",
+    "write_feed_snapshot",
     "week_cluster_entry_count",
     "week_dir",
     "workspace_root",

@@ -16,6 +16,8 @@ from hipeac_agents.agents.vision_watch import settings as watch_settings
 from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, RejectedItem
 from hipeac_agents.agents.vision_watch.state import SourceOutcome
 from hipeac_agents.services.factory import Services
+from hipeac_agents.services.types import ScrapeResult
+from hipeac_agents.services.urls import normalize_url
 
 from .context import HarvestContext
 from .gates import (
@@ -78,6 +80,7 @@ async def _gate_candidate(
     fallback_source_id: str,
     access_method: str,
     tip: bool = False,
+    known_page: ScrapeResult | None = None,
 ) -> tuple[list[Finding], list[RejectedItem]]:
     """Run the window/theme/duplicate/verification gates on one candidate.
 
@@ -90,6 +93,8 @@ async def _gate_candidate(
     :param tip: Board-tip lead: an editor flagged it, so the keyword and
         title-matching gates step aside and the gate call must still name the
         closest theme.
+    :param known_page: The item's page when a structured source already
+        carries it (arXiv): no liveness check and no scrape are needed.
     :returns: ``(verified_findings, rejected_items)`` for this candidate.
     """
     source_id = source.id if source else fallback_source_id
@@ -109,10 +114,10 @@ async def _gate_candidate(
     all_keywords = [keyword for theme in themes for keyword in theme.keywords]
     if not tip and keyword_hits(f"{candidate.title} {candidate.summary}", all_keywords) == 0:
         return [], [_reject(candidate, source_id, "off_theme")]
-    if http_url_is_dead(candidate.url):
+    if known_page is None and http_url_is_dead(candidate.url):
         return [], [_reject(candidate, source_id, "url_404")]
 
-    page = await services.crawl.scrape(candidate.url)
+    page = known_page or await services.crawl.scrape(candidate.url)
 
     if page is None:
         return [], [_reject(candidate, source_id, "url_404")]
@@ -178,39 +183,59 @@ def _clean_feed_summary(raw: str) -> str:
     return text[:500]
 
 
-def parse_feed_entries(xml: str, window_start: date, window_end: date, limit: int = 40) -> list[CandidateItem]:
+def _entry_date(entry: Any) -> date | None:
+    """Read a feed entry's publish (or update) date.
+
+    :param entry: A feedparser entry.
+    :returns: The date, or ``None`` when the entry carries none.
+    """
+    from email.utils import parsedate_to_datetime
+
+    published_raw = getattr(entry, "published", "") or getattr(entry, "updated", "") or ""
+    try:
+        return parsedate_to_datetime(published_raw).date()
+    except TypeError, ValueError:
+        struct = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
+        return date(struct.tm_year, struct.tm_mon, struct.tm_mday) if struct else None
+
+
+def feed_coverage(xml: str) -> tuple[int, date | None]:
+    """Report how much history a feed document carries.
+
+    :param xml: The raw feed document.
+    :returns: ``(entry count, oldest entry date)``; the date is ``None`` when no entry is dated.
+    """
+    import feedparser
+
+    entries = feedparser.parse(xml).entries
+    dates = [d for d in (_entry_date(entry) for entry in entries) if d]
+    return len(entries), (min(dates) if dates else None)
+
+
+def parse_feed_entries(xml: str, window_start: date, window_end: date) -> list[CandidateItem]:
     """Parse an RSS/Atom document into in-window candidate items.
 
     Deterministic: no LLM, no Firecrawl. Entries are filtered by publish date
     before any further work — only items inside the harvest window survive,
-    so old feed history never reaches the gates.
+    so old feed history never reaches the gates. Every entry is considered:
+    parsing costs nothing, and a busy feed's week can run past any fixed cap.
 
     :param xml: The raw feed document.
     :param window_start: Window start (Saturday).
     :param window_end: Window end (Friday).
-    :param limit: Maximum entries to consider (newest first).
     :returns: Candidates with real links and publish dates, in-window only.
     """
-    from email.utils import parsedate_to_datetime
-
     import feedparser
 
     parsed = feedparser.parse(xml)
     items: list[CandidateItem] = []
 
-    for entry in parsed.entries[:limit]:
+    for entry in parsed.entries:
         link = getattr(entry, "link", "") or ""
         if not link:
             continue
 
-        published_raw = getattr(entry, "published", "") or getattr(entry, "updated", "") or ""
-        entry_date: date | None = None
-        try:
-            entry_date = parsedate_to_datetime(published_raw).date()
-        except TypeError, ValueError:
-            struct = getattr(entry, "published_parsed", None) or getattr(entry, "updated_parsed", None)
-            if struct:
-                entry_date = date(struct.tm_year, struct.tm_mon, struct.tm_mday)
+        entry_date = _entry_date(entry)
 
         # Undated entries stay in (the gate handles unknown dates); dated
         # entries outside the window are dropped here, for free.
@@ -236,6 +261,7 @@ async def harvest_feed_source(
     window_end: date,
     prior: list[FindingsFile],
     themes: list[schemas.ThemeDef],
+    snapshot: list[CandidateItem] | None = None,
 ) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
     """One feed-channel source: parse its RSS/Atom directly, gate the entries.
 
@@ -243,7 +269,13 @@ async def harvest_feed_source(
     feedparser, so the listing step costs no Firecrawl call and no extraction
     judgement call. Entries carry real links and publish dates; each still
     goes through the full verification gate (cached item scrape + merged
-    gate call).
+    gate call). Entries captured earlier in the week by ``snapshot-feeds``
+    are merged in, so a busy feed that no longer reaches back to Saturday
+    still yields its whole week.
+
+    A feed that cannot be fetched, or that is empty, falls back to scraping
+    the source's page; both are flagged for the source-health check, as is
+    a feed whose history no longer reaches the window start.
 
     :param ctx: The harvest context holding the LLM runners.
     :param services: The wired service clients.
@@ -252,6 +284,7 @@ async def harvest_feed_source(
     :param window_end: Window end (Friday).
     :param prior: Recent findings files, for duplicate detection.
     :param themes: The watched themes.
+    :param snapshot: This week's entries captured earlier by ``snapshot-feeds``.
     :returns: ``(findings, rejected, outcome)`` for the source.
     """
     feed_url = source.feed_url
@@ -260,19 +293,167 @@ async def harvest_feed_source(
         return await harvest_web_source(ctx, services, source, window_start, window_end, prior, themes)
 
     xml = await services.crawl.fetch_feed(feed_url)
+    entry_count, oldest = feed_coverage(xml) if xml is not None else (0, None)
 
-    if xml is None:
-        # Feed fetch failed — fall back to page scraping so the source is
-        # still checked, just the expensive way.
-        return await harvest_web_source(ctx, services, source, window_start, window_end, prior, themes)
+    if xml is None or entry_count == 0:
+        flag = "feed_fetch_failed" if xml is None else "feed_empty"
+        findings, rejects, outcome = await harvest_web_source(
+            ctx, services, source, window_start, window_end, prior, themes
+        )
+        outcome.flags.append(flag)
+        outcome.detail = "; ".join(filter(None, [f"{flag}: {feed_url}", outcome.detail]))
+        return findings, rejects, outcome
 
     candidates = parse_feed_entries(xml, window_start, window_end)
+    seen = {normalize_url(c.url) for c in candidates}
+    candidates += [c for c in (snapshot or []) if normalize_url(c.url) not in seen]
+
+    flags = []
+    if oldest is not None and oldest > window_start and not snapshot:
+        flags.append("feed_truncated")
+
     verified: list[Finding] = []
     rejected: list[RejectedItem] = []
 
     for candidate in candidates:
         findings, rejects = await _gate_candidate(
             ctx, services, candidate, source, window_start, window_end, prior, themes, source.id, "direct"
+        )
+        verified.extend(findings)
+        rejected.extend(rejects)
+
+    return (
+        verified,
+        rejected,
+        _log_outcome(
+            SourceOutcome(
+                source_id=source.id,
+                status="collected" if verified or rejected else "empty",
+                verified=len(verified),
+                rejected=len(rejected),
+                detail=f"feed reaches back only to {oldest.isoformat()}" if flags else "",
+                flags=flags,
+            )
+        ),
+    )
+
+
+ARXIV_API = "https://export.arxiv.org/api/query"
+ARXIV_PAGE_SIZE = 200
+
+
+def arxiv_query_url(category: str, window_start: date, window_end: date, start: int = 0) -> str:
+    """Build an arXiv API query for one category's submissions in a window.
+
+    The RSS feeds only carry the latest daily announcement and are empty at
+    weekends; the API answers for any date range.
+
+    :param category: An arXiv category, e.g. ``"cs.AR"``.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param start: Result offset, for pagination.
+    :returns: The query URL.
+    """
+    from urllib.parse import urlencode
+
+    query = f"cat:{category} AND submittedDate:[{window_start:%Y%m%d}0000 TO {window_end:%Y%m%d}2359]"
+    params = {
+        "search_query": query,
+        "start": start,
+        "max_results": ARXIV_PAGE_SIZE,
+        "sortBy": "submittedDate",
+        "sortOrder": "descending",
+    }
+    return f"{ARXIV_API}?{urlencode(params)}"
+
+
+def parse_arxiv_entries(xml: str) -> tuple[list[CandidateItem], int]:
+    """Parse one page of arXiv API results into candidates.
+
+    :param xml: The Atom document the API returned.
+    :returns: ``(candidates, total results for the query)``.
+    """
+    import feedparser
+
+    parsed = feedparser.parse(xml)
+    total = int(getattr(parsed.feed, "opensearch_totalresults", 0) or 0)
+    items = []
+    for entry in parsed.entries:
+        link = getattr(entry, "link", "") or getattr(entry, "id", "")
+        entry_date = _entry_date(entry)
+        if not link:
+            continue
+        items.append(
+            CandidateItem(
+                title=" ".join((getattr(entry, "title", "") or "").split()),
+                url=link,
+                date=entry_date.isoformat() if entry_date else "",
+                summary=_clean_feed_summary(getattr(entry, "summary", "") or ""),
+            )
+        )
+    return items, total
+
+
+async def harvest_arxiv_source(
+    ctx: HarvestContext,
+    services: Services,
+    source: schemas.SourceEntry,
+    window_start: date,
+    window_end: date,
+    prior: list[FindingsFile],
+    themes: list[schemas.ThemeDef],
+) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
+    """One arXiv category: the week's submissions from the API, gated.
+
+    The API already gives each paper's title, abstract and date, so no page
+    is scraped: the paper's abstract page stands in as the known page.
+
+    :param ctx: The harvest context holding the LLM runners.
+    :param services: The wired service clients.
+    :param source: The due catalog source with an ``arxiv`` category.
+    :param window_start: Window start (Saturday).
+    :param window_end: Window end (Friday).
+    :param prior: Recent findings files, for duplicate detection.
+    :param themes: The watched themes.
+    :returns: ``(findings, rejected, outcome)`` for the source.
+    """
+    import asyncio
+
+    candidates: list[CandidateItem] = []
+    start = 0
+    while True:
+        xml = await services.crawl.fetch_feed(arxiv_query_url(source.arxiv, window_start, window_end, start))
+        if xml is None:
+            return (
+                [],
+                [],
+                SourceOutcome(
+                    source_id=source.id, status="failed", detail="arXiv API unreachable", flags=["feed_fetch_failed"]
+                ),
+            )
+        page, total = parse_arxiv_entries(xml)
+        candidates.extend(page)
+        start += ARXIV_PAGE_SIZE
+        if not page or start >= total:
+            break
+        await asyncio.sleep(3)  # arXiv API etiquette: one request every three seconds
+
+    verified: list[Finding] = []
+    rejected: list[RejectedItem] = []
+    for candidate in candidates:
+        known = ScrapeResult(url=candidate.url, title=candidate.title, markdown=candidate.summary)
+        findings, rejects = await _gate_candidate(
+            ctx,
+            services,
+            candidate,
+            source,
+            window_start,
+            window_end,
+            prior,
+            themes,
+            source.id,
+            "direct",
+            known_page=known,
         )
         verified.extend(findings)
         rejected.extend(rejects)

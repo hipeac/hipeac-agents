@@ -20,6 +20,7 @@ from .channels import (
     _window_end_dt,
     _window_start_dt,
     attribute_messages,
+    harvest_arxiv_source,
     harvest_board_tips,
     harvest_feed_source,
     harvest_inbox_unattributed,
@@ -108,7 +109,18 @@ async def harvest_node(
                 # Sources with a feed go through the deterministic feed channel
                 # (plain GET + feedparser, no Firecrawl, no extraction call);
                 # the rest through page scraping + extraction.
-                harvest_feed_source(ctx, services, s, window_start, window_end, prior, themes)
+                harvest_arxiv_source(ctx, services, s, window_start, window_end, prior, themes)
+                if s.arxiv
+                else harvest_feed_source(
+                    ctx,
+                    services,
+                    s,
+                    window_start,
+                    window_end,
+                    prior,
+                    themes,
+                    snapshot=workspace.read_feed_snapshot(state.week, s.id),
+                )
                 if s.feed_url
                 else harvest_web_source(ctx, services, s, window_start, window_end, prior, themes),
                 s,

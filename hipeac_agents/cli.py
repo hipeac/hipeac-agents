@@ -6,6 +6,7 @@ Usage::
     ./run python -m hipeac_agents weekly-digest [--send] [--redo]
     ./run python -m hipeac_agents monthly-digest --month 2026-07 [--send]
     ./run python -m hipeac_agents simulate-harvest --on 2026-06-26 [--limit 4] [--skip-sweep]
+    ./run python -m hipeac_agents snapshot-feeds        # daily: keep busy feeds' whole week
 
 Sending is opt-in: without ``--send`` a digest run composes and writes the
 digest, and mails no one.
@@ -18,7 +19,7 @@ import sys
 from datetime import date
 
 from hipeac_agents import settings
-from hipeac_agents.agents.vision_watch import cadence, graph, workspace
+from hipeac_agents.agents.vision_watch import cadence, graph, snapshots, workspace
 from hipeac_agents.agents.vision_watch.state import VisionWatchState
 from hipeac_agents.services.factory import load_services_async
 
@@ -105,6 +106,34 @@ def _target_window(on: date | None = None) -> tuple[date, date]:
     return window
 
 
+def _use_data_dir(data_dir: str | None) -> None:
+    """Point this run at another workspace root (``--data-dir``).
+
+    :param data_dir: The override, or ``None`` to keep the configured root.
+    """
+    if data_dir:
+        from hipeac_agents.agents.vision_watch import settings as watch_settings
+
+        watch_settings.DATA_DIR = data_dir
+
+
+async def _snapshot_feeds(data_dir: str | None) -> int:
+    """Capture the open week's feed entries (``snapshot-feeds``).
+
+    :param data_dir: Optional workspace-root override.
+    :returns: The exit code.
+    """
+    from hipeac_agents.services.crawl import fetch_feed_direct
+
+    _use_data_dir(data_dir)
+    _init_sentry()
+    held = await snapshots.snapshot_feeds(fetch_feed_direct, date.today())
+    for source_id, count in sorted(held.items()):
+        print(f"  {source_id}: {count} entries held this week")
+    print(f"snapshot: {len(held)} feeds captured")
+    return 0
+
+
 def _init_sentry() -> None:
     """Initialise the Sentry SDK when a DSN is configured."""
     if settings.SENTRY_DSN:
@@ -141,11 +170,7 @@ async def _run(
     :param redo: Set the week's files aside first, so it is redone from scratch.
     :returns: The exit code.
     """
-    if data_dir:
-        from hipeac_agents.agents.vision_watch import settings as watch_settings
-
-        watch_settings.DATA_DIR = data_dir
-
+    _use_data_dir(data_dir)
     _init_sentry()
     window = window or cadence.last_closed_window(date.today())
     week = cadence.weekly_label(window[1])
@@ -246,7 +271,10 @@ async def main(argv: list[str] | None = None) -> int:
     :returns: The exit code.
     """
     parser = argparse.ArgumentParser(prog="hipeac_agents")
-    parser.add_argument("command", choices=["weekly-harvest", "weekly-digest", "monthly-digest", "simulate-harvest"])
+    parser.add_argument(
+        "command",
+        choices=["weekly-harvest", "weekly-digest", "monthly-digest", "simulate-harvest", "snapshot-feeds"],
+    )
     parser.add_argument("--on", help="harvest / weekly-digest: run for the week containing this ISO date")
     parser.add_argument("--month", help="monthly-digest: calendar month to synthesise, e.g. 2026-07")
     parser.add_argument("--data-dir", help="workspace-root override (default: HIPEAC_AGENTS_DATA_DIR)")
@@ -266,6 +294,9 @@ async def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
+    if args.command == "snapshot-feeds":
+        return await _snapshot_feeds(args.data_dir)
 
     if args.command == "simulate-harvest" and not args.on:
         parser.error("simulate-harvest requires --on YYYY-MM-DD (e.g. --on 2026-06-26 for a Friday-evening run)")

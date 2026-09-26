@@ -139,6 +139,7 @@ class SourceEntry(BaseModel):
     name: str
     url: str
     feed_url: str | None = None
+    arxiv: str | None = None
     source_class: SourceClass = Field(alias="class")
     themes: list[str] = []
     region: Region

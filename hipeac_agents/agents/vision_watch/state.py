@@ -15,10 +15,13 @@ class SourceOutcome(BaseModel):
     """
 
     source_id: str
-    status: str  # collected | blocked | empty | failed
+    status: str  # collected | blocked | empty | failed | skipped
     verified: int = 0
     rejected: int = 0
     detail: str = ""
+    # Channel observations the source-health check reads:
+    # feed_fetch_failed | feed_empty | feed_truncated.
+    flags: list[str] = []
 
 
 class ClusterReport(BaseModel):
