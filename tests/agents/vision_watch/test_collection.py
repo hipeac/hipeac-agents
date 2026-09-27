@@ -7,7 +7,12 @@ import pytest
 from hipeac_agents.agents.vision_watch import workspace
 from hipeac_agents.agents.vision_watch.nodes.harvest import channels
 from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
-from hipeac_agents.agents.vision_watch.nodes.harvest.models import CandidateItem, CandidateList, GateVerdict
+from hipeac_agents.agents.vision_watch.nodes.harvest.models import (
+    CandidateItem,
+    CandidateList,
+    GateVerdict,
+    TriageVerdict,
+)
 from hipeac_agents.agents.vision_watch.schemas import SourceEntry
 from hipeac_agents.agents.vision_watch.snapshots import snapshot_feeds
 from hipeac_agents.services.factory import Services
@@ -16,18 +21,31 @@ from tests.agents.vision_watch._fakes import FakeCrawl, FakeLLM, make_candidate_
 
 WINDOW = (date(2026, 9, 19), date(2026, 9, 25))
 
-ARXIV_XML = """<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">
-  <opensearch:totalResults>1</opensearch:totalResults>
-  <entry>
-    <id>http://arxiv.org/abs/2609.01234v1</id>
-    <published>2026-09-22T17:04:24Z</published>
-    <title>A Chiplet
-      Interconnect for Agents</title>
-    <summary>We present an open chiplet interconnect for agentic workloads.</summary>
-    <link href="http://arxiv.org/abs/2609.01234v1" rel="alternate" type="text/html"/>
-  </entry>
-</feed>"""
+
+def _listing_entry(n: int, paper_id: str, title: str) -> str:
+    return (
+        f'<dt><a name=\'item{n}\'>[{n}]</a><a href ="/abs/{paper_id}" title="Abstract" id="{paper_id}">'
+        f"arXiv:{paper_id}</a></dt><dd><div class='meta'><div class='list-title mathjax'>"
+        f"<span class='descriptor'>Title:</span>\n          {title}\n        </div></div></dd>"
+    )
+
+
+ARXIV_LISTING = (
+    "<html><body>"
+    "<h3>Mon, 28 Sep 2026 (showing 1 of 1 entries )</h3>"
+    + _listing_entry(1, "2609.40000", "Next Week Paper")
+    + "<h3>Tue, 22 Sep 2026 (showing 2 of 2 entries )</h3>"
+    + _listing_entry(2, "2609.01234", "A Chiplet\n Interconnect for &amp; Agents")
+    + _listing_entry(3, "2609.01235", "Yet Another Benchmark")
+    + "<h3>Fri, 18 Sep 2026 (showing 1 of 1 entries )</h3>"
+    + _listing_entry(4, "2609.00001", "Last Week Paper")
+    + "</body></html>"
+)
+
+ARXIV_ABSTRACT_PAGE = (
+    '<blockquote class="abstract mathjax">\n<span class="descriptor">Abstract:</span>'
+    "We present an open <b>chiplet</b> interconnect for agentic workloads.\n</blockquote>"
+)
 
 
 def _rss(*items: tuple[str, str, str]) -> str:
@@ -64,37 +82,51 @@ def themes(data_dir):
 
 
 class TestArxiv:
-    def test_query_bounds_the_submission_dates(self):
-        url = channels.arxiv_query_url("cs.AR", *WINDOW)
+    def test_listing_keeps_papers_announced_in_the_window(self):
+        items = channels.parse_arxiv_listing(ARXIV_LISTING, *WINDOW)
 
-        assert "cat%3Acs.AR" in url
-        assert "submittedDate%3A%5B202609190000+TO+202609252359%5D" in url
+        assert [(i.title, i.url, i.date) for i in items] == [
+            ("A Chiplet Interconnect for & Agents", "https://arxiv.org/abs/2609.01234", "2026-09-22"),
+            ("Yet Another Benchmark", "https://arxiv.org/abs/2609.01235", "2026-09-22"),
+        ]
 
-    def test_parses_title_link_date_and_total(self):
-        items, total = channels.parse_arxiv_entries(ARXIV_XML)
+    def test_abstract_is_plain_text(self):
+        assert channels.parse_arxiv_abstract(ARXIV_ABSTRACT_PAGE) == (
+            "We present an open chiplet interconnect for agentic workloads."
+        )
 
-        assert total == 1
-        assert items[0].title == "A Chiplet Interconnect for Agents"
-        assert items[0].url == "http://arxiv.org/abs/2609.01234v1"
-        assert items[0].date == "2026-09-22"
-
-    async def test_harvests_the_week_without_scraping(self, themes):
-        """Regression (baseline B6): arXiv RSS is empty at weekends, so the
-        preprint sources had produced nothing; the API answers for any week."""
+    async def test_triages_titles_then_fetches_only_kept_abstracts(self, themes, monkeypatch):
+        """Regression (baseline B6): arXiv RSS is empty at weekends and the API
+        host rejects Python clients; the past-week listing serves any weekday."""
+        monkeypatch.setattr("asyncio.sleep", _no_sleep)
         source = _source(id="arxiv-cs-ar", arxiv="cs.AR", url="https://arxiv.org/list/cs.AR/new")
-        crawl = FakeCrawl(feeds={channels.arxiv_query_url("cs.AR", *WINDOW): ARXIV_XML})
-        llm = FakeLLM({GateVerdict: make_gate_handler(["agentic-ai"])})
+        crawl = FakeCrawl(
+            feeds={
+                channels.ARXIV_LISTING.format(category="cs.AR"): ARXIV_LISTING,
+                "https://arxiv.org/abs/2609.01234": ARXIV_ABSTRACT_PAGE,
+            }
+        )
+        llm = FakeLLM(
+            {
+                TriageVerdict: lambda prompt: TriageVerdict(items=[{"index": 1, "keep": False}]),
+                GateVerdict: make_gate_handler(["agentic-ai"]),
+            }
+        )
 
         findings, rejected, outcome = await channels.harvest_arxiv_source(
             HarvestContext(llm), Services(crawl=crawl, mail=None, vision=None), source, *WINDOW, [], themes
         )
 
-        assert [f.title for f in findings] == ["A Chiplet Interconnect for Agents"]
+        assert [f.title for f in findings] == ["A Chiplet Interconnect for & Agents"]
         assert findings[0].date == date(2026, 9, 22)
-        assert not crawl.scrape_calls, "the API already carries the paper; no scrape needed"
+        assert [(r.claimed_title, r.reason) for r in rejected] == [("Yet Another Benchmark", "off_theme")]
+        assert "https://arxiv.org/abs/2609.01235" not in crawl.feed_calls, "dropped papers cost no fetch"
+        assert not crawl.scrape_calls, "nothing goes through the crawl provider"
+        gate_prompt = next(prompt for schema, prompt in llm.calls if schema is GateVerdict)
+        assert "open chiplet interconnect" in gate_prompt, "the verdict sees the abstract"
         assert outcome.status == "collected"
 
-    async def test_unreachable_api_is_flagged(self, themes):
+    async def test_unreachable_listing_is_flagged(self, themes):
         source = _source(id="arxiv-cs-ar", arxiv="cs.AR")
 
         _, _, outcome = await channels.harvest_arxiv_source(
@@ -103,6 +135,10 @@ class TestArxiv:
 
         assert outcome.status == "failed"
         assert outcome.flags == ["feed_fetch_failed"]
+
+
+async def _no_sleep(_seconds):
+    return None
 
 
 class TestFeedFallbacks:

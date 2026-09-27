@@ -426,60 +426,57 @@ async def harvest_feed_source(
     )
 
 
-ARXIV_API = "https://export.arxiv.org/api/query"
-ARXIV_PAGE_SIZE = 200
+ARXIV_LISTING = "https://arxiv.org/list/{category}/pastweek?show=2000"
+ARXIV_ABSTRACT = "https://arxiv.org/abs/{paper_id}"
+
+_ARXIV_DAY = re.compile(r"<h3>\s*(\w{3}, \d{1,2} \w{3} \d{4})")
+_ARXIV_ENTRY = re.compile(
+    r"<dt>.*?href\s*=\s*\"/abs/([^\"]+)\".*?<div class='list-title mathjax'>"
+    r"<span class='descriptor'>Title:</span>(.*?)</div>",
+    re.DOTALL,
+)
+_ARXIV_ABSTRACT = re.compile(r'<blockquote class="abstract mathjax">(.*?)</blockquote>', re.DOTALL)
 
 
-def arxiv_query_url(category: str, window_start: date, window_end: date, start: int = 0) -> str:
-    """Build an arXiv API query for one category's submissions in a window.
+def parse_arxiv_listing(html: str, window_start: date, window_end: date) -> list[CandidateItem]:
+    """Parse a category's past-week listing into the papers announced in a window.
 
-    The RSS feeds only carry the latest daily announcement and are empty at
-    weekends; the API answers for any date range.
+    arXiv's API host rejects Python clients (TLS fingerprinting) and its RSS
+    feeds carry only the latest day, empty at weekends; the listing page
+    covers the last five announcement days and is plain HTML. Entries are
+    dated by the day they were announced.
 
-    :param category: An arXiv category, e.g. ``"cs.AR"``.
+    :param html: The listing page.
     :param window_start: Window start (Saturday).
     :param window_end: Window end (Friday).
-    :param start: Result offset, for pagination.
-    :returns: The query URL.
+    :returns: Candidates with the abstract-page URL, title and announcement date.
     """
-    from urllib.parse import urlencode
-
-    query = f"cat:{category} AND submittedDate:[{window_start:%Y%m%d}0000 TO {window_end:%Y%m%d}2359]"
-    params = {
-        "search_query": query,
-        "start": start,
-        "max_results": ARXIV_PAGE_SIZE,
-        "sortBy": "submittedDate",
-        "sortOrder": "descending",
-    }
-    return f"{ARXIV_API}?{urlencode(params)}"
-
-
-def parse_arxiv_entries(xml: str) -> tuple[list[CandidateItem], int]:
-    """Parse one page of arXiv API results into candidates.
-
-    :param xml: The Atom document the API returned.
-    :returns: ``(candidates, total results for the query)``.
-    """
-    import feedparser
-
-    parsed = feedparser.parse(xml)
-    total = int(getattr(parsed.feed, "opensearch_totalresults", 0) or 0)
-    items = []
-    for entry in parsed.entries:
-        link = getattr(entry, "link", "") or getattr(entry, "id", "")
-        entry_date = _entry_date(entry)
-        if not link:
+    items: list[CandidateItem] = []
+    days = list(_ARXIV_DAY.finditer(html))
+    for i, day in enumerate(days):
+        announced = datetime.strptime(day.group(1), "%a, %d %b %Y").date()
+        if not window_start <= announced <= window_end:
             continue
-        items.append(
-            CandidateItem(
-                title=" ".join((getattr(entry, "title", "") or "").split()),
-                url=link,
-                date=entry_date.isoformat() if entry_date else "",
-                summary=_clean_feed_summary(getattr(entry, "summary", "") or ""),
+        section = html[day.end() : days[i + 1].start() if i + 1 < len(days) else len(html)]
+        for paper_id, raw_title in _ARXIV_ENTRY.findall(section):
+            title = " ".join(unescape(_FEED_MARKUP.sub(" ", raw_title)).split())
+            items.append(
+                CandidateItem(title=title, url=ARXIV_ABSTRACT.format(paper_id=paper_id), date=announced.isoformat())
             )
-        )
-    return items, total
+    return items
+
+
+def parse_arxiv_abstract(html: str) -> str:
+    """Extract the abstract text from a paper's abstract page.
+
+    :param html: The abstract page.
+    :returns: The abstract, or ``""`` when the page has none.
+    """
+    match = _ARXIV_ABSTRACT.search(html)
+    if not match:
+        return ""
+    text = " ".join(unescape(_FEED_MARKUP.sub(" ", match.group(1))).split())
+    return _ABSTRACT_LEAD.sub("", text)[:500]
 
 
 async def harvest_arxiv_source(
@@ -491,46 +488,67 @@ async def harvest_arxiv_source(
     prior: list[FindingsFile],
     themes: list[schemas.ThemeDef],
 ) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
-    """One arXiv category: the week's submissions from the API, gated.
+    """One arXiv category: the papers announced in the week, triaged on their titles.
 
-    The API already gives each paper's title, abstract and date, so no page
-    is scraped: the paper's abstract page stands in as the known page.
+    The listing gives titles only, and busy categories announce hundreds of
+    papers a week, so triage runs on titles first; only the kept papers'
+    abstract pages are fetched (plainly, one a second), and they stand in for
+    the scraped page — nothing goes through the crawl provider. The listing
+    covers the last five announcement days only, so an older window finds
+    nothing.
 
     :param ctx: The harvest context holding the LLM runners.
     :param services: The wired service clients.
     :param source: The due catalog source with an ``arxiv`` category.
     :param window_start: Window start (Saturday).
     :param window_end: Window end (Friday).
-    :param prior: Recent findings files, for duplicate detection.
-    :param themes: The watched themes.
+    :param prior: All recorded findings files, for duplicate detection.
+    :param themes: The themes.
     :returns: ``(findings, rejected, outcome)`` for the source.
     """
     import asyncio
 
-    candidates: list[CandidateItem] = []
-    start = 0
-    while True:
-        xml = await services.crawl.fetch_feed(arxiv_query_url(source.arxiv, window_start, window_end, start))
-        if xml is None:
-            return (
-                [],
-                [],
-                SourceOutcome(
-                    source_id=source.id, status="failed", detail="arXiv API unreachable", flags=["feed_fetch_failed"]
-                ),
-            )
-        page, total = parse_arxiv_entries(xml)
-        candidates.extend(page)
-        start += ARXIV_PAGE_SIZE
-        if not page or start >= total:
-            break
-        await asyncio.sleep(3)  # arXiv API etiquette: one request every three seconds
+    html = await services.crawl.fetch_feed(ARXIV_LISTING.format(category=source.arxiv))
+    if html is None:
+        return (
+            [],
+            [],
+            SourceOutcome(
+                source_id=source.id, status="failed", detail="arXiv listing unreachable", flags=["feed_fetch_failed"]
+            ),
+        )
 
-    known = {c.url: ScrapeResult(url=c.url, title=c.title, markdown=c.summary) for c in candidates}
-    verified, rejected = await gate_candidates(
+    candidates: list[CandidateItem] = []
+    rejected: list[RejectedItem] = []
+    for candidate in parse_arxiv_listing(html, window_start, window_end):
+        if reject := _pre_gate(candidate, source.id, window_start, window_end, prior):
+            rejected.append(reject)
+        else:
+            candidates.append(candidate)
+
+    kept = await ctx.triage([(c.title, "") for c in candidates], themes) if candidates else set()
+    rejected.extend(
+        _reject(c, source.id, "off_theme", "triage: no signal for any theme")
+        for i, c in enumerate(candidates)
+        if i not in kept
+    )
+
+    survivors: list[CandidateItem] = []
+    known: dict[str, ScrapeResult] = {}
+    for i, candidate in enumerate(candidates):
+        if i not in kept:
+            continue
+        page = await services.crawl.fetch_feed(candidate.url)
+        abstract = parse_arxiv_abstract(page or "")
+        candidate = candidate.model_copy(update={"summary": abstract})
+        survivors.append(candidate)
+        known[candidate.url] = ScrapeResult(url=candidate.url, title=candidate.title, markdown=abstract)
+        await asyncio.sleep(1)  # arXiv etiquette: be gentle with arxiv.org
+
+    verified, gated_rejects = await gate_candidates(
         ctx,
         services,
-        candidates,
+        survivors,
         source,
         window_start,
         window_end,
@@ -538,8 +556,10 @@ async def harvest_arxiv_source(
         themes,
         source.id,
         "direct",
+        triaged=True,
         known_pages=known,
     )
+    rejected.extend(gated_rejects)
 
     return (
         verified,
