@@ -1,24 +1,19 @@
-"""Digest node: composes the weekly pulse from the cluster logs and sends it.
+"""Digest node: composes the weekly digest from the cluster logs and sends it.
 
-Weekly digest only — the monthly synthesis belongs to a future agent. Layout:
+Layout:
 
-- ``prompts.py`` — the LLM prompt constants.
-- ``models.py`` — the structured-output models for the judgement calls.
-- ``node.py`` — orchestration: prose calls, markdown assembly, write, send.
+- ``prompts.py`` — the prompt for the one judgement call.
+- ``models.py`` — its structured-output model.
+- ``node.py`` — orchestration: story selection, the prose call, citation
+  resolution and the budget, markdown assembly, write, send.
 
-LLM-JUDGEMENT CALLS — review before the first live run:
-
-1. ``DigestProse`` / ``DIGEST_ITEM`` — item prose in the documented anatomy.
-2. ``DIGEST_IN_BRIEF`` — the ~100-word In brief section.
-3. ``SignalGroups`` / ``DIGEST_SIGNALS`` — grouping off-theme rejects into an
-   "Also worth watching" signal, when a coherent group exists.
-
-Boundaries: reads clusters, findings, rejects, last digest; writes only the
-digest; recommends, never decides. AgentMail send is its only service call.
+The digest tells at most two stories per theme, citing findings by id; code
+turns citations into links, so no URL the model invents is ever published.
+Every finding of the week is kept in the signals log written beside it.
 """
 
-from .models import DigestProse, SignalGroup, SignalGroups  # noqa: F401
-from .node import compose_digest_markdown, digest_node  # noqa: F401
+from .models import Story, StoryDigest  # noqa: F401
+from .node import compose_digest_markdown, digest_node, resolve_citations  # noqa: F401
 
 
-__all__ = ["DigestProse", "SignalGroup", "SignalGroups", "compose_digest_markdown", "digest_node"]
+__all__ = ["Story", "StoryDigest", "compose_digest_markdown", "digest_node", "resolve_citations"]

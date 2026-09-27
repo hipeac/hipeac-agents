@@ -305,6 +305,15 @@ def cluster_filename(theme: str) -> str:
     return f"{theme}-clusters.json"
 
 
+def signals_filename(week: str) -> str:
+    """Return the filename of a week's signals log, kept beside its digest.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :returns: ``"digest-2026-W24-signals.md"``.
+    """
+    return f"digest-{week}-signals.md"
+
+
 def digest_filename(week: str) -> str:
     """Return the weekly digest filename for a week label.
 
@@ -524,6 +533,7 @@ def purge_week(week: str, keep_evidence: bool, data_dir: str | None = None) -> P
     else:
         _move(week_dir(week, data_dir), f"evidence/{week}")
     _move(weekly_digest_dir(data_dir) / digest_filename(week), f"digests/weekly/{digest_filename(week)}")
+    _move(weekly_digest_dir(data_dir) / signals_filename(week), f"digests/weekly/{signals_filename(week)}")
 
     for path in sorted(clusters_dir(data_dir).glob("*-clusters.json")):
         log = schemas.ClusterLog.model_validate_json(path.read_text(encoding="utf-8"))
@@ -565,6 +575,23 @@ def read_weekly_digest(week: str, data_dir: str | None = None) -> str | None:
     """
     path = weekly_digest_dir(data_dir) / digest_filename(week)
     return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def write_weekly_signals(week: str, markdown: str, data_dir: str | None = None) -> Path:
+    """Write a week's signals log — every finding, beside the short digest.
+
+    Derived from the clusters scoped through the week, so rewriting it is
+    harmless; unlike the digest it is not write-once.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param markdown: The log markdown.
+    :param data_dir: Optional workspace-root override.
+    :returns: The written path.
+    """
+    path = weekly_digest_dir(data_dir) / signals_filename(week)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(markdown, encoding="utf-8")
+    return path
 
 
 def _sent_marker(digest_path: Path) -> Path:
@@ -737,6 +764,7 @@ __all__ = [
     "read_source_catalog",
     "read_themes",
     "rejected_path",
+    "signals_filename",
     "weekly_digest_dir",
     "weekly_digest_sent",
     "weekly_label",
@@ -750,4 +778,5 @@ __all__ = [
     "write_sources_file",
     "write_rejected_file",
     "write_weekly_digest",
+    "write_weekly_signals",
 ]

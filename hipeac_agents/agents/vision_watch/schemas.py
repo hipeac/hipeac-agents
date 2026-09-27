@@ -158,8 +158,9 @@ class ThemeDef(BaseModel):
     """A Vision line (theme) from the human-owned ``config/themes.yaml``.
 
     Themes are the broad lines of the HiPEAC Vision; the watch collects the
-    signals inside them. ``description`` says in plain words what the line
-    covers, ``questions`` are the open questions the next Vision asks in it,
+    signals inside them. ``title`` is the heading readers see (the id when
+    empty), ``description`` says in plain words what the line covers,
+    ``questions`` are the open questions the next Vision asks in it,
     ``look_for`` names real-world indicators (programmes, companies,
     products) since news never uses the Vision's own vocabulary, and
     ``keywords`` are optional hints.
@@ -167,11 +168,17 @@ class ThemeDef(BaseModel):
 
     theme: str
     description: str
+    title: str = ""
     questions: list[str] = []
     look_for: list[str] = []
     keywords: list[str] = []
     sweep_query: str | None = None
     chapter: str = ""
+
+    @property
+    def heading(self) -> str:
+        """The name readers see: the title, or the id when no title is set."""
+        return self.title or self.theme
 
     def brief(self) -> str:
         """Render the theme for a judgement prompt.

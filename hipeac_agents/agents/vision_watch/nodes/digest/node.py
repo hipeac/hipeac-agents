@@ -1,6 +1,7 @@
-"""The digest node's orchestration: prose calls, markdown assembly, write, send."""
+"""The digest node's orchestration: story selection, one prose call, assembly, write, send."""
 
 import logging
+import re
 from typing import Any
 
 from hipeac_agents.agents.vision_watch import settings as watch_settings
@@ -9,86 +10,43 @@ from hipeac_agents.agents.vision_watch.nodes.cluster.tallies import (
     entries_through,
     is_candidate_trend,
     sort_lead_candidates,
-    sort_ranked,
-    strongest,
     tally_text,
-    threshold_progress,
     trend_status,
 )
-from hipeac_agents.agents.vision_watch.schemas import Cluster, RejectedItem, SourceCatalog, ThemeDef
+from hipeac_agents.agents.vision_watch.schemas import ClusterEntry, Finding, SourceCatalog, ThemeDef
 from hipeac_agents.agents.vision_watch.state import VisionWatchState
 from hipeac_agents.services.factory import Services
 from hipeac_agents.services.mail import markdown_to_html
 from hipeac_agents.services.urls import display_domain
 
-from .models import DigestProse, InBrief, SignalGroup, SignalGroups
-from .prompts import DIGEST_IN_BRIEF, DIGEST_ITEM, DIGEST_SIGNALS
+from .models import StoryDigest
+from .prompts import DIGEST_STORIES
 
 
 logger = logging.getLogger(__name__)
 
-# Per-question entry cap: a week flooded by a high-volume feed must not print
-# every entry, only its strongest.
-_MAX_THEME_ENTRIES = 12
+# The digest's budget: the board reads at most this many stories per theme.
+# The model sees a few more candidates than it may write, so it can leave the
+# weak ones out; everything else is kept in the week's signals log.
+MAX_STORIES_PER_THEME = 2
+STORY_CANDIDATES_PER_THEME = 4
+FINDINGS_PER_STORY = 4
 
-# "What's brewing": long-horizon items and weak signals, strongest first.
-_MAX_BREWING = 8
-_SIGNAL_CLASSES = {"foresight", "community"}
+QUIET_WEEK = StoryDigest(headline="Quiet week", this_week="No new signals reached the watch this week.")
 
-
-async def _item_prose(llm: Any, context: str) -> DigestProse:
-    """Write one digest item's prose.
-
-    LLM judgement call (digest item anatomy) — see ``prompts.DIGEST_ITEM``.
-    """
-    runner = llm.with_structured_output(DigestProse)
-    return await runner.ainvoke(DIGEST_ITEM + "\n\nItem material:\n" + context)
-
-
-async def _in_brief(llm: Any, context: str) -> InBrief:
-    """Write the ~100-word In brief section.
-
-    LLM judgement call (digest prose) — see ``prompts.DIGEST_IN_BRIEF``.
-    """
-    runner = llm.with_structured_output(InBrief)
-    return await runner.ainvoke(DIGEST_IN_BRIEF + "\n\nDigest material:\n" + context)
-
-
-async def _signal_groups(llm: Any, rejects: list[RejectedItem], themes: list[ThemeDef]) -> SignalGroups:
-    """Group off-theme rejects that collectively point to a shared dynamic.
-
-    LLM judgement call (signal triage) — see ``prompts.DIGEST_SIGNALS``.
-    """
-    theme_text = "\n".join(t.brief() for t in themes)
-    rejects_text = "\n".join(f"- {r.url} — {r.claimed_title}: {r.summary}" for r in rejects)
-    runner = llm.with_structured_output(SignalGroups)
-    return await runner.ainvoke(
-        DIGEST_SIGNALS + f"\n\nWatched themes:\n{theme_text}\n\nThis week's off-theme rejects:\n{rejects_text}"
-    )
-
-
-def _collect_off_theme_rejects(week: str) -> list[RejectedItem]:
-    """Read this week's off-theme rejects, the signal-triage call's input.
-
-    :param week: The week label.
-    :returns: The week's off-theme rejects, or an empty list if none.
-    """
-    rejected_file = workspace.read_rejected_file(week)
-
-    if rejected_file is None:
-        return []
-
-    return [item for item in rejected_file.rejected if item.reason == "off_theme"]
+_CITATION = re.compile(r"\[([^\]]+)\]\((F\d+)\)")
+_BARE_CITATION = re.compile(r"\s*[\[(](F\d+)[\])]")
+_LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 
 
 def _collect_clusters(week: str, themes: list[str]) -> dict[str, dict[str, Any]]:
-    """Collect every cluster of the watched themes, scoped through this week.
+    """Collect every cluster of the themes, scoped through this week.
 
     Entries recorded after ``week`` are excluded, so a digest re-composed
-    later for the same week reports the same tally.
+    later for the same week sees the same tallies.
 
     :param week: The week label.
-    :param themes: The watched theme ids, in digest order.
+    :param themes: The theme ids, in digest order.
     :returns: Cluster id to ``{theme, cluster, entries, this_week}``.
     """
     cluster_data: dict[str, dict[str, Any]] = {}
@@ -115,186 +73,236 @@ def _collect_clusters(week: str, themes: list[str]) -> dict[str, dict[str, Any]]
     return cluster_data
 
 
-def _lead_cluster(
-    touched: dict[str, dict[str, Any]], week: str, catalog: SourceCatalog
-) -> tuple[str, dict[str, Any]] | None:
-    """Pick the week's lead cluster — the "One big thing" — via ``sort_lead_candidates``.
+def _ranked(entries: list[ClusterEntry]) -> list[ClusterEntry]:
+    return sorted(entries, key=lambda entry: (-(entry.significance or 3), -entry.date.toordinal()))
 
-    :param touched: Cluster id to cluster data, clusters with entries this week only.
+
+def story_candidates(
+    week: str, themes: list[ThemeDef], cluster_data: dict[str, dict[str, Any]], catalog: SourceCatalog
+) -> dict[str, list[tuple[str, dict[str, Any]]]]:
+    """Pick each theme's candidate stories: its clusters that moved this week, strongest first.
+
+    Ranked like the old lead story — forward significance, then novelty —
+    and cut to ``STORY_CANDIDATES_PER_THEME``.
+
     :param week: The week label.
-    :param catalog: The parsed source catalog, for the independence discount.
-    :returns: ``(cluster id, cluster data)`` of the lead, or ``None`` when nothing was touched.
+    :param themes: The themes, in digest order.
+    :param cluster_data: Cluster id to ``{theme, cluster, entries, this_week}``.
+    :param catalog: The source catalog, for the independence discount.
+    :returns: Theme id to ``(cluster id, cluster data)`` pairs.
     """
-    if not touched:
-        return None
+    touched = {cid: data for cid, data in cluster_data.items() if data["this_week"]}
+    candidates: dict[str, list[tuple[str, dict[str, Any]]]] = {}
 
-    candidates: list[tuple[Cluster, list[Any], list[Any]]] = [
-        (data["cluster"], data["entries"], data["this_week"]) for data in touched.values()
+    for theme in themes:
+        mine = [(d["cluster"], d["entries"], d["this_week"]) for d in touched.values() if d["theme"] == theme.theme]
+        ranked = sort_lead_candidates(mine, week, catalog)[:STORY_CANDIDATES_PER_THEME]
+        candidates[theme.theme] = [(cluster.id, touched[cluster.id]) for cluster, _, _ in ranked]
+
+    return candidates
+
+
+def story_material(
+    themes: list[ThemeDef],
+    candidates: dict[str, list[tuple[str, dict[str, Any]]]],
+    forward_notes: dict[str, str],
+) -> tuple[str, dict[str, str]]:
+    """Render the prose call's input, numbering every finding it may cite.
+
+    :param themes: The themes, in digest order.
+    :param candidates: Theme id to its candidate stories.
+    :param forward_notes: Finding id to its forward note, when it has one.
+    :returns: ``(material, refs)`` — refs maps each ``F<n>`` to the finding's URL.
+    """
+    refs: dict[str, str] = {}
+    blocks: list[str] = []
+
+    for theme in themes:
+        lines = [f'THEME "{theme.theme}" ({theme.heading}) — {theme.description.strip()}']
+        if theme.questions:
+            lines.append(f"Open questions: {' '.join(theme.questions)}")
+
+        stories = candidates.get(theme.theme, [])
+        if not stories:
+            lines.append("(no stories this week)")
+
+        for _cluster_id, data in stories:
+            lines.append(
+                f'Story "{data["cluster"].name}" — {trend_status(data["entries"])}; '
+                f"{tally_text(data['entries'])}; {len(data['this_week'])} new this week"
+            )
+            for entry in _ranked(data["this_week"])[:FINDINGS_PER_STORY]:
+                ref = f"F{len(refs) + 1}"
+                refs[ref] = entry.url
+                about = [f"source: {entry.source_id}"]
+                if entry.significance:
+                    about.append(f"significance {entry.significance}")
+                if entry.horizon:
+                    about.append(f"horizon {entry.horizon}")
+                note = forward_notes.get(entry.finding_id)
+                lines.append(
+                    f"  - {ref}: {entry.note} ({'; '.join(about)})" + (f" Forward note: {note}" if note else "")
+                )
+
+        blocks.append("\n".join(lines))
+
+    return "\n\n".join(blocks), refs
+
+
+def resolve_citations(text: str, refs: dict[str, str]) -> str:
+    """Turn the model's finding citations into real links; drop anything else.
+
+    ``[phrase](F12)`` becomes a link to F12's URL; a bare ``[F12]`` or
+    ``(F12)`` becomes a source link on the domain. A citation of an unknown
+    id, or a link to any URL the model was not given, keeps its words and
+    loses the link — the model can never publish a URL of its own.
+
+    :param text: The model's text.
+    :param refs: ``F<n>`` to URL, for this digest.
+    :returns: The text with markdown links to the given URLs only.
+    """
+    text = _CITATION.sub(lambda m: f"[{m.group(1)}]({refs[m.group(2)]})" if m.group(2) in refs else m.group(1), text)
+    text = _BARE_CITATION.sub(
+        lambda m: f" ([{display_domain(refs[m.group(1)])}]({refs[m.group(1)]}))" if m.group(1) in refs else "", text
+    )
+    allowed = set(refs.values())
+    return _LINK.sub(lambda m: m.group(0) if m.group(2) in allowed else m.group(1), text)
+
+
+def newly_converged(cluster_data: dict[str, dict[str, Any]], week: str) -> list[tuple[str, dict[str, Any]]]:
+    """Find the clusters that crossed the candidate-trend threshold this week.
+
+    :param cluster_data: Cluster id to ``{theme, cluster, entries, this_week}``.
+    :param week: The week label.
+    :returns: ``(cluster id, cluster data)`` for each cluster that converged this week.
+    """
+    return [
+        (cid, data)
+        for cid, data in cluster_data.items()
+        if data["this_week"]
+        and is_candidate_trend(data["entries"])
+        and not is_candidate_trend([entry for entry in data["entries"] if entry.week < week])
     ]
-    top_cluster, _, _ = sort_lead_candidates(candidates, week, catalog)[0]
-    return top_cluster.id, touched[top_cluster.id]
+
+
+def _plain(text: str) -> str:
+    return text.strip().strip("*#_\"'").strip().rstrip(".")
 
 
 def compose_digest_markdown(
     week: str,
     themes: list[ThemeDef],
-    cluster_data: dict[str, dict[str, Any]],
-    prose: dict[str, DigestProse],
-    in_brief: str,
-    signal_groups: list[SignalGroup] | None = None,
+    digest: StoryDigest,
+    refs: dict[str, str],
+    tips: list[Finding],
+    converged: list[tuple[str, dict[str, Any]]],
+    total_signals: int,
 ) -> str:
-    """Assemble the digest markdown from this week's cluster entries.
+    """Assemble the digest: bottom line, stories per theme, tips, convergence, quiet themes.
 
-    Sections: In brief; One big thing (the week's lead cluster, full item
-    anatomy); What's brewing (long-horizon items and weak signals); What
-    moved in each theme (every cluster touched this week, one line each,
-    tagged by direction); Board tips; Also worth watching (off-theme rejects
-    grouped into a shared signal); Trending this week (standing evidence
-    weight, ranked).
+    The budget is enforced here, not trusted to the model: at most
+    ``MAX_STORIES_PER_THEME`` stories per theme, stories on unknown themes
+    dropped, and a story that ends up citing no finding dropped — a story
+    without evidence is not one.
+
+    :param week: The week label.
+    :param themes: The themes, in digest order.
+    :param digest: The prose call's output.
+    :param refs: ``F<n>`` to URL, for this digest.
+    :param tips: The week's board-tip findings.
+    :param converged: The clusters that crossed the candidate-trend threshold this week.
+    :param total_signals: The number of findings this week.
+    :returns: The digest markdown.
+    """
+    by_theme: dict[str, list[tuple[str, str]]] = {}
+    for story in digest.stories:
+        text = resolve_citations(story.text.strip(), refs)
+        if "](http" not in text:
+            logger.warning("digest %s: dropped story %r, it cites no finding", week, story.title)
+            continue
+        by_theme.setdefault(story.theme, []).append((_plain(story.title), text))
+
+    lines = [
+        f"# HiPEAC Vision Watch — Week {week}: {_plain(digest.headline) or 'Quiet week'}",
+        "",
+        resolve_citations(digest.this_week.strip(), refs),
+        "",
+    ]
+
+    told = 0
+    for theme in themes:
+        stories = by_theme.get(theme.theme, [])[:MAX_STORIES_PER_THEME]
+        if not stories:
+            continue
+        lines.extend([f"## {theme.heading}", ""])
+        for title, text in stories:
+            lines.extend([f"**{title}.** {text}", ""])
+            told += 1
+
+    if tips:
+        lines.extend(["## Board tips", ""])
+        lines.extend(f"- _{tip.summary}_ — [{display_domain(tip.url)}]({tip.url})" for tip in tips)
+        lines.append("")
+
+    if converged:
+        headings = {theme.theme: theme.heading for theme in themes}
+        lines.extend(["## Newly converged", ""])
+        lines.extend(
+            f"- **{data['cluster'].name}** ({headings.get(data['theme'], data['theme'])}): "
+            f"{tally_text(data['entries'])}. "
+            "Enough independent, sustained evidence to consider naming it in the Vision."
+            for _cid, data in converged
+        )
+        lines.append("")
+
+    quiet = [theme.heading for theme in themes if not by_theme.get(theme.theme)]
+    if quiet:
+        lines.extend([f"_Quiet this week: {', '.join(quiet)}._", ""])
+
+    lines.append(
+        f"_{told} {'story' if told == 1 else 'stories'} from {total_signals} signals this week; "
+        f"all signals are listed in {workspace.signals_filename(week)}._"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def compose_signals_log(
+    week: str, themes: list[ThemeDef], cluster_data: dict[str, dict[str, Any]], findings: list[Finding]
+) -> str:
+    """List every finding of the week, by theme and story, so the digest can stay short.
 
     :param week: The week label.
     :param themes: The themes, in digest order.
     :param cluster_data: Cluster id to ``{theme, cluster, entries, this_week}``.
-    :param prose: Cluster id to the lead cluster's prose, when generated.
-    :param in_brief: The In brief text.
-    :param signal_groups: This week's signal-triage groups, if any.
-    :returns: The full digest markdown.
+    :param findings: The week's findings.
+    :returns: The signals log markdown.
     """
-    touched = {cid: data for cid, data in cluster_data.items() if data["this_week"]}
-    signal_groups = signal_groups or []
-    catalog = _catalog()
-
-    lines: list[str] = [
-        f"# HiPEAC Vision Watch — Week {week}",
+    lines = [
+        f"# HiPEAC Vision Watch — all signals, week {week}",
         "",
-        "## In brief",
-        "",
-        in_brief,
+        f"{len(findings)} findings, by theme and story.",
         "",
     ]
-
-    lead = _lead_cluster(touched, week, catalog)
-
-    if lead is not None:
-        top_id, top_data = lead
-        item = prose.get(top_id)
-        best = strongest(top_data["this_week"])
-        lines.extend(
-            [
-                "## One big thing",
-                "",
-                f"**_{item.lead if item else best.note}_** — [{display_domain(best.url)}]({best.url})",
-                "",
-            ]
-        )
-        if item:
-            lines.extend(
-                [
-                    f"- Why it matters: {item.why_it_matters}",
-                    f"- Europe: {item.europe}",
-                    f"- Maturity and confidence: {item.maturity} ({tally_text(top_data['entries'])})",
-                ]
-            )
-        lines.append("")
-
-    findings_file = workspace.read_findings_file(week)
-    findings = findings_file.findings if findings_file else []
-    classes = {source.id: source.source_class for source in catalog.sources}
-    brewing = sorted(
-        (f for f in findings if f.horizon == "3-5y" or classes.get(f.source_id) in _SIGNAL_CLASSES),
-        key=lambda f: (-f.significance, f.date),
-    )[:_MAX_BREWING]
-    if brewing:
-        lines.extend(["## What's brewing", ""])
-        for finding in brewing:
-            note = f" {finding.forward_note}" if finding.forward_note else ""
-            horizon = f" ({finding.horizon})" if finding.horizon else ""
-            lines.append(f"- _{finding.summary}_{note} — [{display_domain(finding.url)}]({finding.url}){horizon}")
-        lines.append("")
-
-    lines.extend(["## What moved in each theme", ""])
+    placed: set[str] = set()
 
     for theme in themes:
-        heading = f"### {theme.theme}"
-        theme_clusters = [(cid, data) for cid, data in touched.items() if data["theme"] == theme.theme]
-
-        if not theme_clusters:
-            lines.extend([heading, "", "Quiet week — no entries this window.", ""])
+        stories = [data for data in cluster_data.values() if data["theme"] == theme.theme and data["this_week"]]
+        if not stories:
             continue
+        lines.extend([f"## {theme.heading}", ""])
+        for data in sorted(stories, key=lambda d: -len(d["this_week"])):
+            lines.extend([f"### {data['cluster'].name} ({tally_text(data['entries'])})", ""])
+            for entry in _ranked(data["this_week"]):
+                placed.add(entry.finding_id)
+                lines.append(f"- [{entry.note or entry.title}]({entry.url}) — {entry.source_id}")
+            lines.append("")
 
-        lines.extend([heading, ""])
-
-        by_finding: dict[str, dict[str, Any]] = {}
-        for cid, data in theme_clusters:
-            for entry in data["this_week"]:
-                found = by_finding.setdefault(entry.finding_id, {"entry": entry, "cluster_ids": []})
-                found["cluster_ids"].append(cid)
-
-        ranked = sorted(
-            by_finding.values(),
-            key=lambda found: (-(found["entry"].significance or 3), -found["entry"].date.toordinal()),
-        )
-
-        for found in ranked[:_MAX_THEME_ENTRIES]:
-            entry = found["entry"]
-            text = entry.note or entry.title
-            cluster_ids = ", ".join(found["cluster_ids"])
-            tag = f"**{entry.direction}** · " if entry.direction else ""
-            lines.append(f"- {tag}_{text}_ — [{display_domain(entry.url)}]({entry.url}) — in {cluster_ids}")
-
-        if len(ranked) > _MAX_THEME_ENTRIES:
-            lines.append(
-                f"- (+{len(ranked) - _MAX_THEME_ENTRIES} more entries this week — see the theme's cluster log.)"
-            )
-
+    unplaced = [finding for finding in findings if finding.id not in placed]
+    if unplaced:
+        lines.extend(["## Not in any story", ""])
+        lines.extend(f"- [{finding.summary}]({finding.url}) — {finding.source_id}" for finding in unplaced)
         lines.append("")
 
-    # Board tips: a tip is an editor-flagged lead, recorded verbatim every
-    # time — even when the grouping call placed it in no cluster, where the
-    # theme sections would lose it.
-    tips = [f for f in findings if f.source_id == "board-tip"]
-    if tips:
-        lines.extend(["## Board tips this week", ""])
-        for tip in tips:
-            lines.append(f"- _{tip.summary}_ — [{display_domain(tip.url)}]({tip.url})")
-        lines.append("")
-
-    if signal_groups:
-        lines.extend(["## Also worth watching", ""])
-        for group in signal_groups:
-            links = ", ".join(f"[{display_domain(url)}]({url})" for url in group.urls)
-            lines.append(f"- _{group.blurb}_ — {links}")
-        lines.append("")
-
-    # Trending this week: the main clusters with movement, ranked by weight.
-    trending = sort_ranked([(data["cluster"], data["entries"]) for data in touched.values()], catalog)[:10]
-
-    lines.extend(
-        [
-            "## Trending this week",
-            "",
-            "(Evidence status: a converged story has enough independent, sustained",
-            "evidence for the board to consider naming it in the Vision.)",
-            "",
-        ]
-    )
-
-    if trending:
-        for cluster, _entries in trending:
-            data = touched[cluster.id]
-            status = (
-                "converged — consider naming it in the Vision"
-                if is_candidate_trend(data["entries"])
-                else "still gathering evidence"
-            )
-            lines.append(
-                f"- **{cluster.id}** ({data['theme']}): {len(data['this_week'])} new this week. "
-                f"Evidence so far: {tally_text(data['entries'])}. Status: {status}."
-            )
-    else:
-        lines.append("(No clusters with movement this window.)")
-
-    lines.append("")
     return "\n".join(lines)
 
 
@@ -304,85 +312,63 @@ async def digest_node(
     services: Services,
     llm: Any,
 ) -> dict[str, Any]:
-    """Compose the weekly pulse from the cluster logs, write it, send it.
+    """Compose the week's digest from the cluster logs, write it, send it.
 
-    The digest is built from the week's actual cluster entries, scoped
-    through the week — so re-runs of the same week compose identically.
+    One prose call writes the stories; code picks the candidates, resolves
+    the citations and enforces the budget. The full list of the week's
+    findings is written next to the digest as its signals log.
 
-    :param state: The graph state; carries the week.
+    :param state: The graph state; carries the week and the ``send`` opt-in.
     :param services: The wired services (mail for the send step).
-    :param llm: The chat model used for the lead item's prose call.
+    :param llm: The chat model used for the stories.
     :returns: State updates: digest markdown, sent flag.
     """
     week = state.week
 
     # Preflight: the digest is write-once, so composing a week that already
-    # has one would pay for every prose call and then raise on the write. A
+    # has one would pay for the prose call and then raise on the write. A
     # recorded digest is still sendable once — compose, review, then --send.
     if recorded := workspace.read_weekly_digest(week):
         logger.info("week %s already has a digest; skipping composition", week)
-        themes = [theme.theme for theme in workspace.read_themes()]
-        touched = {cid: data for cid, data in _collect_clusters(week, themes).items() if data["this_week"]}
-        lead = _lead_cluster(touched, week, _catalog())
-        sent = await _send(services, state, week, recorded, lead[1]["cluster"].name if lead else None)
-        return {"digest_markdown": recorded, "digest_sent": sent}
+        return {"digest_markdown": recorded, "digest_sent": await _send(services, state, week, recorded)}
 
-    theme_defs = workspace.read_themes()
-    themes = [theme.theme for theme in theme_defs]
-    cluster_data = _collect_clusters(week, themes)
-    catalog = _catalog()
+    themes = workspace.read_themes()
+    cluster_data = _collect_clusters(week, [theme.theme for theme in themes])
+    findings_file = workspace.read_findings_file(week)
+    findings = findings_file.findings if findings_file else []
 
-    touched = {cid: data for cid, data in cluster_data.items() if data["this_week"]}
-    lead = _lead_cluster(touched, week, catalog)
+    candidates = story_candidates(week, themes, cluster_data, _catalog())
+    forward_notes = {finding.id: finding.forward_note for finding in findings if finding.forward_note}
+    material, refs = story_material(themes, candidates, forward_notes)
 
-    prose: dict[str, DigestProse] = {}
+    if refs:
+        digest = await llm.with_structured_output(StoryDigest).ainvoke(DIGEST_STORIES + "\n\n" + material)
+    else:
+        digest = QUIET_WEEK
 
-    if lead is not None:
-        lead_id, lead_data = lead
-        best = strongest(lead_data["this_week"])
-        prose[lead_id] = await _item_prose(
-            llm,
-            f"Cluster: {lead_id} (theme: {lead_data['theme']})\n"
-            f"Strongest entry: {best.note} ([source]({best.url}), {best.date})\n"
-            f"Tally: {tally_text(lead_data['entries'])}\n"
-            f"Status: {trend_status(lead_data['entries'])}\n"
-            f"Threshold progress: {threshold_progress(lead_data['entries'])}",
-        )
-
-    ranked_ids = [
-        cluster.id for cluster, _ in sort_ranked([(d["cluster"], d["entries"]) for d in touched.values()], catalog)
-    ]
-
-    if lead is not None and lead_id in ranked_ids:
-        ranked_ids.remove(lead_id)
-        ranked_ids.insert(0, lead_id)
-
-    in_brief = await _in_brief(
-        llm,
-        "\n".join(
-            f"{cid} ({touched[cid]['theme']}): "
-            f"{strongest(touched[cid]['this_week']).note} ({strongest(touched[cid]['this_week']).url})"
-            for cid in ranked_ids[:5]
-        ),
+    tips = [finding for finding in findings if finding.source_id == "board-tip"]
+    markdown = compose_digest_markdown(
+        week, themes, digest, refs, tips, newly_converged(cluster_data, week), len(findings)
     )
-    off_theme_rejects = _collect_off_theme_rejects(week)
-    signal_groups = (await _signal_groups(llm, off_theme_rejects, theme_defs)).groups if off_theme_rejects else []
-
-    markdown = compose_digest_markdown(week, theme_defs, cluster_data, prose, in_brief.text.strip(), signal_groups)
+    workspace.write_weekly_signals(week, compose_signals_log(week, themes, cluster_data, findings))
     workspace.write_weekly_digest(week, markdown)
 
-    sent = await _send(services, state, week, markdown, lead[1]["cluster"].name if lead is not None else None)
-    return {"digest_markdown": markdown, "digest_sent": sent}
+    return {"digest_markdown": markdown, "digest_sent": await _send(services, state, week, markdown)}
 
 
-async def _send(services: Services, state: VisionWatchState, week: str, markdown: str, lead_name: str | None) -> bool:
+def _subject(markdown: str) -> str:
+    """Take the email subject from the digest's title line."""
+    first = markdown.splitlines()[0] if markdown else ""
+    return first.removeprefix("#").strip() or "HiPEAC Vision Watch"
+
+
+async def _send(services: Services, state: VisionWatchState, week: str, markdown: str) -> bool:
     """Email a week's digest to the board, at most once and only with ``--send``.
 
     :param services: The wired services (mail).
     :param state: The graph state; carries the ``send`` opt-in.
     :param week: The week label.
-    :param markdown: The digest markdown.
-    :param lead_name: The lead cluster's name, for the subject; ``None`` on a quiet week.
+    :param markdown: The digest markdown; its title line is the subject.
     :returns: ``True`` when the digest was sent by this run.
     """
     recipient = watch_settings.HIPEAC_VISION_BOARD_EMAIL
@@ -397,7 +383,7 @@ async def _send(services: Services, state: VisionWatchState, week: str, markdown
     message_id = await services.mail.send(
         inbox,
         recipient,
-        subject=f"HiPEAC Vision Watch — Week {week}: {lead_name or 'Quiet week'}",
+        subject=_subject(markdown),
         text=markdown,
         html=markdown_to_html(markdown),
         reply_to=watch_settings.HIPEAC_VISION_REPLY_TO,
@@ -406,6 +392,6 @@ async def _send(services: Services, state: VisionWatchState, week: str, markdown
     return True
 
 
-def _catalog():
+def _catalog() -> SourceCatalog:
     """Read the source catalog, for the ranking's independence discount."""
     return workspace.read_source_catalog()

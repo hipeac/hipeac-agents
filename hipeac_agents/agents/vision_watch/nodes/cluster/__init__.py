@@ -40,7 +40,6 @@ from .tallies import (  # noqa: F401
     spread,
     strongest,
     tally_text,
-    threshold_progress,
     trend_status,
 )
 
@@ -67,6 +66,5 @@ __all__ = [
     "spread",
     "strongest",
     "tally_text",
-    "threshold_progress",
     "trend_status",
 ]

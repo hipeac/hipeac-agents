@@ -17,7 +17,7 @@ The pipeline is `harvest -> health` and `cluster -> digest`, with a separate `mo
 | `harvest` | Collects from the source catalog, arXiv, the tips mailbox and a web sweep; triages and judges each candidate against the themes |
 | `health`  | Labels every source (failing, empty, stale, silent…) and emails the dev list when the picture changes                         |
 | `cluster` | Groups findings into cross-week clusters, one file per theme, append-only                                                    |
-| `digest`  | Composes the weekly markdown digest (lead, what's brewing, movement per theme) and mails it                                  |
+| `digest`  | Writes the week as a few short stories per theme, with the findings linked inline, and mails it                              |
 | `monthly` | Synthesises a calendar month from the weekly evidence                                                                           |
 
 The editorial week runs **Saturday through Friday**; a digest is labelled by the ISO week of its closing Friday, e.g. `2026-W37`. Without `--on`, a run targets the most recently closed week: on a Saturday, the week that ended the day before.
@@ -57,6 +57,8 @@ Useful flags:
 
 A digest composed without `--send` can be reviewed and sent later with `--send`; it is never sent twice.
 
+The weekly digest is written for the editorial board: a short bottom line, then at most two stories per theme, each a few sentences with the evidence linked inline, the board tips, and any story that newly converged. Quiet themes are named in one line. Every finding of the week is kept in the signals log beside the digest, so the digest can stay short.
+
 ## The data directory
 
 `HIPEAC_AGENTS_DATA_DIR` points at a workspace the repository does not carry:
@@ -65,7 +67,7 @@ A digest composed without `--send` can be reviewed and sent later with `--send`;
 config/                 themes.yaml, source-catalog.yaml (human-owned)
 evidence/<week>/        findings.json, rejected.json, grouping.json, sources.json, health.json/.md (write-once)
 clusters/               one file per theme, append-only, cross-week
-digests/weekly/         digest-YYYY-Www.md (write-once) and its .sent.json marker
+digests/weekly/         digest-YYYY-Www.md (write-once), its .sent.json marker, and -signals.md (every finding)
 digests/monthly/        digest-YYYY-MM.md (write-once) and its .sent.json marker
 cache/scrapes/          content-addressed crawl cache
 cache/feed-snapshots/   the open week's feed entries, captured daily

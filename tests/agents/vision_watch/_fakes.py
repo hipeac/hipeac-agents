@@ -38,8 +38,6 @@ class FakeLLM:
         self.calls.append((schema, prompt))
         if schema is str:
             return "In brief text."
-        if getattr(schema, "__name__", "") == "InBrief":
-            return schema(text="In brief text.")
         handler = self.handlers.get(schema)
         if handler is None and getattr(schema, "__name__", "") == "TriageVerdict":
             return schema(items=[])  # keep everything unless a test scripts triage
@@ -125,6 +123,32 @@ def make_grouping_handler(assignments: list[dict]) -> callable:
     from hipeac_agents.agents.vision_watch.nodes.cluster import GroupingPlan
 
     return lambda prompt: GroupingPlan.model_validate({"assignments": assignments})
+
+
+def make_story_handler(headline: str = "Europe builds compute") -> callable:
+    """Build a StoryDigest handler that writes one story per theme with candidates.
+
+    Behaves like a well-mannered model: each story cites the first finding
+    offered under its theme, and the opener cites the first finding overall.
+    """
+    import re
+
+    from hipeac_agents.agents.vision_watch.nodes.digest import Story, StoryDigest
+
+    def handler(prompt: str):
+        stories, first = [], None
+        for block in prompt.split('THEME "')[1:]:
+            theme = block.split('"', 1)[0]
+            refs = re.findall(r"^  - (F\d+):", block, flags=re.M)
+            if refs:
+                first = first or refs[0]
+                stories.append(
+                    Story(theme=theme, title=f"Story in {theme}", text=f"Something moved: [a finding]({refs[0]}).")
+                )
+        opener = f"The week's news is in one theme: [this]({first})." if first else "Nothing moved."
+        return StoryDigest(headline=headline, this_week=opener, stories=stories)
+
+    return handler
 
 
 def structured_model(cls: type[BaseModel], **data) -> BaseModel:

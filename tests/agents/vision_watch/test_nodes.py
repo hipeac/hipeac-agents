@@ -13,11 +13,12 @@ from hipeac_agents.agents.vision_watch.nodes import cluster as cluster_node_mod
 from hipeac_agents.agents.vision_watch.nodes import digest as digest_node_mod
 from hipeac_agents.agents.vision_watch.nodes import harvest as harvest_node_mod
 from hipeac_agents.agents.vision_watch.nodes.cluster import GroupingPlan
-from hipeac_agents.agents.vision_watch.nodes.digest import DigestProse
+from hipeac_agents.agents.vision_watch.nodes.digest import Story, StoryDigest
 from hipeac_agents.agents.vision_watch.nodes.harvest.models import (
     CandidateList,
     GateVerdict,
 )
+from hipeac_agents.agents.vision_watch.schemas import FindingsFile
 from hipeac_agents.services.factory import Services
 from hipeac_agents.services.types import MailMessage
 from tests.agents.vision_watch._fakes import (
@@ -27,6 +28,7 @@ from tests.agents.vision_watch._fakes import (
     make_candidate_handler,
     make_gate_handler,
     make_grouping_handler,
+    make_story_handler,
 )
 
 
@@ -646,640 +648,362 @@ class TestClusterNode:
         assert updates["notes"] and "joined no cluster" in updates["notes"][0]
 
 
+def _digest_entry(week: str, finding_id: str, url: str, significance: int = 3, source_class: str = "aggregators"):
+    from hipeac_agents.agents.vision_watch.schemas import ClusterEntry
+
+    return ClusterEntry(
+        week=week,
+        finding_id=finding_id,
+        source_id="robot-report",
+        source_class=source_class,
+        region="global",
+        date=date(2026, 6, 9),
+        note=f"Note {finding_id}",
+        url=url,
+        significance=significance,
+    )
+
+
+def _digest_finding(finding_id: str, url: str, **extra):
+    from hipeac_agents.agents.vision_watch.schemas import Finding
+
+    base = {
+        "id": finding_id,
+        "date": date(2026, 6, 9),
+        "title": f"Title {finding_id}",
+        "url": url,
+        "source_id": "robot-report",
+        "region": "global",
+        "summary": f"Summary {finding_id}.",
+    }
+    return Finding(**{**base, **extra})
+
+
 class TestDigestNode:
     @pytest.fixture(autouse=True)
     def _setup(self, data_dir, monkeypatch):
+        from hipeac_agents.agents.vision_watch.schemas import Cluster
+
         monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.DATA_DIR", data_dir)
-        from datetime import date as date_cls
-
-        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
-
+        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
+        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
         workspace.append_cluster(
             Cluster(
                 id="humanoid-deployment",
                 name="Humanoids",
                 opened="2026-W24",
-                entries=[
-                    ClusterEntry.model_validate(
-                        {
-                            "week": "2026-W24",
-                            "finding_id": "f-1",
-                            "source_id": "robot-report",
-                            "source_class": "aggregators",
-                            "tier": 2,
-                            "region": "global",
-                            "date": "2026-06-09",
-                            "note": "Deployment",
-                            "url": "https://example.com/a",
-                        }
-                    )
-                ],
+                entries=[_digest_entry("2026-W24", "f-1", "https://example.com/a")],
             ),
             theme="physical-ai",
-            created=date_cls(2026, 1, 8),
+            created=date(2026, 1, 8),
         )
 
-    async def test_writes_and_sends_digest(self, llm, monkeypatch):
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
-
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {
-                "lead": "Humanoids deployed.",
-                "why_it_matters": "Field shifts.",
-                "europe": "GAP: none",
-                "maturity": "watch, low",
-            }
-        )
-        mail = FakeMail()
+    @staticmethod
+    async def _run(llm, send=False, mail=None, week="2026-W24"):
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        state = VisionWatchState.model_construct(week="2026-W24", send=True)
-
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=mail, vision=None), llm=llm
+        return await digest_node_mod.digest_node(
+            VisionWatchState.model_construct(week=week, send=send),
+            services=Services(crawl=None, mail=mail, vision=None),
+            llm=llm,
         )
 
-        assert "## In brief" in updates["digest_markdown"]
-        assert "## One big thing" in updates["digest_markdown"]
-        assert "https://example.com/a" in updates["digest_markdown"]
-        assert updates["digest_sent"] is True
-        assert mail.sent[0][1] == "news@example.com"
-        digest_path = workspace.weekly_digest_dir() / "digest-2026-W24.md"
-        assert digest_path.exists()
+    async def test_writes_stories_under_their_theme_and_the_signals_log(self, llm):
+        llm.handlers[StoryDigest] = make_story_handler()
 
-    async def test_sends_markdown_and_html_parts(self, llm, monkeypatch):
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
+        updates = await self._run(llm)
+
+        markdown = updates["digest_markdown"]
+        assert markdown.startswith("# HiPEAC Vision Watch — Week 2026-W24: Europe builds compute\n")
+        physical = markdown.split("## physical-ai")[1]
+        assert "**Story in physical-ai.** Something moved: [a finding](https://example.com/a)." in physical
+        assert "## One big thing" not in markdown
+        assert (workspace.weekly_digest_dir() / "digest-2026-W24.md").exists()
+        assert (workspace.weekly_digest_dir() / "digest-2026-W24-signals.md").exists()
+        assert "1 story from 0 signals this week" in markdown
+
+    async def test_theme_title_is_the_heading_when_set(self, llm, data_dir):
+        config = workspace.workspace_root(data_dir) / "config" / "themes.yaml"
+        config.write_text(
+            "themes:\n  - theme: physical-ai\n    title: Physical AI\n    description: AI in the physical world.\n",
+            encoding="utf-8",
+        )
+        llm.handlers[StoryDigest] = make_story_handler()
+
+        updates = await self._run(llm)
+
+        assert "## Physical AI\n" in updates["digest_markdown"]
+
+    async def test_sends_markdown_and_html_with_the_headline_as_subject(self, llm, monkeypatch):
         monkeypatch.setattr(
             "hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_REPLY_TO", "webmaster@example.com"
         )
-
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {
-                "lead": "Humanoids deployed.",
-                "why_it_matters": "Field shifts.",
-                "europe": "GAP: none",
-                "maturity": "watch, low",
-            }
-        )
+        llm.handlers[StoryDigest] = make_story_handler()
         mail = FakeMail()
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24", send=True),
-            services=Services(crawl=None, mail=mail, vision=None),
-            llm=llm,
-        )
+        updates = await self._run(llm, send=True, mail=mail)
 
-        _, _, _, text, html, reply_to = mail.sent[0]
-        assert reply_to == "webmaster@example.com"
+        _, to, subject, text, html, reply_to = mail.sent[0]
+        assert updates["digest_sent"] is True
+        assert (to, reply_to) == ("news@example.com", "webmaster@example.com")
+        assert subject == "HiPEAC Vision Watch — Week 2026-W24: Europe builds compute"
         assert text.startswith("# HiPEAC Vision Watch")
-        assert "## One big thing" in text
-        # The HTML part carries rendered markup, not the raw markdown source.
-        assert "<h2>One big thing</h2>" in html
-        assert "## One big thing" not in html
-        assert '<a href="https://example.com/a">' in html
+        assert '<a href="https://example.com/a">a finding</a>' in html
+        assert "## physical-ai" not in html
 
     async def test_skips_send_without_mail_service(self, llm):
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+        llm.handlers[StoryDigest] = make_story_handler()
 
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-        state = VisionWatchState.model_construct(week="2026-W24")
-
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
-        )
+        updates = await self._run(llm, send=True)
 
         assert updates["digest_sent"] is False
-        assert "## In brief" in updates["digest_markdown"]
 
-    async def test_sending_is_opt_in(self, llm, monkeypatch):
-        """Sending is opt-in: a fully configured run that omits ``send`` writes
-        the digest and mails no one. The board list is the real audience."""
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
+    async def test_sending_is_opt_in(self, llm):
+        """Sending is opt-in: a fully configured run without ``send`` mails no one."""
+        llm.handlers[StoryDigest] = make_story_handler()
         mail = FakeMail()
-        state = VisionWatchState.model_construct(week="2026-W24")
 
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=mail, vision=None), llm=llm
-        )
+        updates = await self._run(llm, mail=mail)
 
         assert updates["digest_sent"] is False
         assert not mail.sent
-        assert (workspace.weekly_digest_dir() / "digest-2026-W24.md").exists()
 
-    async def test_already_sent_week_is_not_recomposed_or_resent(self, llm, monkeypatch):
+    async def test_already_sent_week_is_not_recomposed_or_resent(self, llm):
         """Regression: the digest is write-once, so a re-run used to pay for
         every prose call and then raise on the write. It now replays, and a
         digest already sent is never sent again."""
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
         workspace.write_weekly_digest("2026-W24", "# Already composed\n")
         workspace.mark_weekly_digest_sent("2026-W24", "m-earlier")
         mail = FakeMail()
-        llm.calls.clear()
 
-        updates = await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24", send=True),
-            services=Services(crawl=None, mail=mail, vision=None),
-            llm=llm,
-        )
+        updates = await self._run(llm, send=True, mail=mail)
 
         assert updates["digest_markdown"] == "# Already composed\n"
         assert updates["digest_sent"] is False
         assert not mail.sent
         assert not llm.calls, "a recorded week must cost no LLM calls"
 
-    async def test_composed_digest_is_sendable_later_exactly_once(self, llm, monkeypatch):
+    async def test_composed_digest_is_sendable_later_exactly_once(self, llm):
         """Regression (baseline B1): with sending opt-in, compose → review →
         ``--send`` silently mailed no one, because the recorded-digest replay
         returned before the send step."""
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_BOARD_EMAIL", "news@example.com")
-        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
+        llm.handlers[StoryDigest] = make_story_handler()
         mail = FakeMail()
-        services = Services(crawl=None, mail=mail, vision=None)
 
-        composed = await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24", send=False), services=services, llm=llm
-        )
-        assert not mail.sent
+        composed = await self._run(llm, mail=mail)
         llm.calls.clear()
+        sent = await self._run(llm, send=True, mail=mail)
+        again = await self._run(llm, send=True, mail=mail)
 
-        sent = await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24", send=True), services=services, llm=llm
-        )
-        again = await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24", send=True), services=services, llm=llm
-        )
-
-        assert sent["digest_sent"] is True
-        assert again["digest_sent"] is False
+        assert (sent["digest_sent"], again["digest_sent"]) == (True, False)
         assert len(mail.sent) == 1
         assert mail.sent[0][3] == composed["digest_markdown"]
-        assert mail.sent[0][2] == "HiPEAC Vision Watch — Week 2026-W24: Humanoids"
+        assert mail.sent[0][2] == "HiPEAC Vision Watch — Week 2026-W24: Europe builds compute"
         assert not llm.calls, "sending a recorded digest must cost no LLM calls"
-        assert workspace.weekly_digest_sent("2026-W24")
 
-    async def test_lead_prefers_this_weeks_significance_over_lifetime_volume(self, llm):
-        """Regression: the lead used to be picked by lifetime entry count, so a
-        cluster with 30 old routine entries always beat a fresh, significant burst."""
-        from datetime import date as date_cls
+    async def test_exactly_one_prose_call_per_run(self, llm):
+        llm.handlers[StoryDigest] = make_story_handler()
 
-        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
+        await self._run(llm)
 
-        def make_entry(week: str, finding_id: str, significance: int, url: str) -> ClusterEntry:
-            return ClusterEntry.model_validate(
-                {
-                    "week": week,
-                    "finding_id": finding_id,
-                    "source_id": "darpa-news",
-                    "source_class": "programmes",
-                    "significance": significance,
-                    "region": "global",
-                    "date": "2026-06-09",
-                    "note": "n",
-                    "url": url,
-                }
-            )
+        assert [schema for schema, _ in llm.calls] == [StoryDigest]
 
-        heavy_entries = [
-            make_entry(f"2026-W{(i % 20) + 1:02d}", f"h-{i}", 3, "https://example.com/heavy") for i in range(29)
-        ] + [make_entry("2026-W24", "h-29", 3, "https://example.com/heavy")]
-        workspace.append_cluster(
-            Cluster(id="old-news", name="Old News", opened="2026-W01", entries=heavy_entries),
-            theme="agentic-ai",
-            created=date_cls(2026, 1, 8),
-        )
-        fresh_entries = [
-            make_entry("2026-W24", "f-1", 5, "https://example.com/fresh-1"),
-            make_entry("2026-W24", "f-2", 5, "https://example.com/fresh-2"),
-        ]
-        workspace.append_cluster(
-            Cluster(id="fresh-news", name="Fresh News", opened="2026-W24", entries=fresh_entries),
-            theme="agentic-ai",
-            created=date_cls(2026, 1, 8),
-        )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        state = VisionWatchState.model_construct(week="2026-W24")
-
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
+    async def test_model_urls_and_unknown_citations_never_become_links(self, llm):
+        """The model cites findings by id; only the URLs it was given can be linked."""
+        llm.handlers[StoryDigest] = StoryDigest(
+            headline="H",
+            this_week="See [the real one](F1).",
+            stories=[
+                Story(
+                    theme="physical-ai",
+                    title="Mixed evidence",
+                    text=(
+                        "A [real finding](F1), a [made-up link](https://evil.example/x), "
+                        "a [ghost](F99) and a bare (F1)."
+                    ),
+                )
+            ],
         )
 
-        one_big_thing = updates["digest_markdown"].split("## One big thing")[1].split("## What moved in each theme")[0]
-        assert "https://example.com/fresh-1" in one_big_thing
-        assert "https://example.com/heavy" not in one_big_thing
+        markdown = (await self._run(llm))["digest_markdown"]
 
-    async def test_tally_scoped_to_week_not_future_entries(self, llm):
-        """Regression: the tally used to include entries logged after the
-        digest's week, so a later re-composition of the same week disagreed."""
-        from datetime import date as date_cls
+        assert "evil.example" not in markdown
+        assert "a made-up link," in markdown
+        assert "a ghost and" in markdown
+        assert "a bare ([example.com](https://example.com/a))." in markdown
+        assert "[real finding](https://example.com/a)" in markdown
 
-        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
-
-        def make_entry(week: str, finding_id: str) -> ClusterEntry:
-            return ClusterEntry.model_validate(
-                {
-                    "week": week,
-                    "finding_id": finding_id,
-                    "source_id": "darpa-news",
-                    "source_class": "programmes",
-                    "tier": 2,
-                    "region": "global",
-                    "date": "2026-06-09",
-                    "note": "n",
-                    "url": f"https://example.com/{finding_id}",
-                }
-            )
-
-        workspace.append_cluster(
-            Cluster(
-                id="scoped-cluster",
-                name="Scoped Cluster",
-                opened="2026-W24",
-                entries=[make_entry("2026-W24", "s-1"), make_entry("2026-W25", "s-2")],
-            ),
-            theme="agentic-ai",
-            created=date_cls(2026, 1, 8),
-        )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        state = VisionWatchState.model_construct(week="2026-W24")
-
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
+    async def test_budget_is_enforced_in_code(self, llm):
+        """At most 2 stories per theme; unknown themes and uncited stories never print."""
+        llm.handlers[StoryDigest] = StoryDigest(
+            headline="H",
+            this_week="Opener.",
+            stories=[
+                Story(theme="physical-ai", title="One", text="First [x](F1)."),
+                Story(theme="physical-ai", title="Uncited", text="No evidence here."),
+                Story(theme="physical-ai", title="Two", text="Second [x](F1)."),
+                Story(theme="physical-ai", title="Three", text="Third [x](F1)."),
+                Story(theme="no-such-theme", title="Stray", text="Stray [x](F1)."),
+            ],
         )
 
-        trending = updates["digest_markdown"].split("## Trending this week")[1]
-        scoped_line = next(line for line in trending.splitlines() if "scoped-cluster" in line)
-        assert "1 finding" in scoped_line
-        assert "2 findings" not in scoped_line
+        markdown = (await self._run(llm))["digest_markdown"]
 
-    async def test_one_big_thing_source_is_strongest_entry_not_first_logged(self, llm):
-        """Regression: the source line used to be the first this-week entry in
-        log order, not the strongest one."""
-        from datetime import date as date_cls
+        assert "**One.**" in markdown
+        assert "**Two.**" in markdown
+        assert "Three" not in markdown
+        assert "Uncited" not in markdown
+        assert "Stray" not in markdown
+        assert "2 stories from" in markdown
 
-        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
+    async def test_quiet_themes_are_named_once(self, llm):
+        llm.handlers[StoryDigest] = make_story_handler()
 
-        def make_entry(finding_id: str, significance: int, url: str) -> ClusterEntry:
-            return ClusterEntry.model_validate(
-                {
-                    "week": "2026-W24",
-                    "finding_id": finding_id,
-                    "source_id": "darpa-news",
-                    "source_class": "programmes",
-                    "significance": significance,
-                    "region": "global",
-                    "date": "2026-06-09",
-                    "note": "n",
-                    "url": url,
-                }
-            )
+        markdown = (await self._run(llm))["digest_markdown"]
 
-        workspace.append_cluster(
-            Cluster(
-                id="mixed-significance",
-                name="Mixed Significance",
-                opened="2026-W24",
-                entries=[
-                    make_entry("m-1", 2, "https://example.com/weak-first"),
-                    make_entry("m-2", 5, "https://example.com/strong-second"),
-                ],
-            ),
-            theme="agentic-ai",
-            created=date_cls(2026, 1, 8),
-        )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+        assert "_Quiet this week: next-computing-paradigm, agentic-ai._" in markdown
 
-        state = VisionWatchState.model_construct(week="2026-W24")
+    async def test_quiet_week_costs_no_prose_call(self, llm):
+        markdown = (await self._run(llm, week="2026-W30"))["digest_markdown"]
 
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
-        )
+        assert markdown.startswith("# HiPEAC Vision Watch — Week 2026-W30: Quiet week\n")
+        assert not llm.calls
 
-        one_big_thing = updates["digest_markdown"].split("## One big thing")[1].split("## What moved in each theme")[0]
-        assert "https://example.com/strong-second" in one_big_thing
-        assert "https://example.com/weak-first" not in one_big_thing
-
-    async def test_exactly_one_digest_prose_call_per_run(self, llm):
-        """Regression: prose used to be generated for every touched cluster,
-        even though only the lead's prose is ever rendered."""
-        from datetime import date as date_cls
-
-        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
-
-        entry = ClusterEntry.model_validate(
-            {
-                "week": "2026-W24",
-                "finding_id": "sc-1",
-                "source_id": "darpa-news",
-                "source_class": "programmes",
-                "tier": 2,
-                "region": "global",
-                "date": "2026-06-09",
-                "note": "n",
-                "url": "https://example.com/sc-1",
-            }
-        )
-        workspace.append_cluster(
-            Cluster(id="second-cluster", name="Second Cluster", opened="2026-W24", entries=[entry]),
-            theme="agentic-ai",
-            created=date_cls(2026, 1, 8),
-        )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        state = VisionWatchState.model_construct(week="2026-W24")
-
-        await digest_node_mod.digest_node(state, services=Services(crawl=None, mail=None, vision=None), llm=llm)
-
-        prose_calls = [call for call in llm.calls if call[0] is DigestProse]
-        assert len(prose_calls) == 1
-
-    async def test_brewing_section_and_question_headings(self, llm):
-        """The digest leads with what is brewing: long-horizon items and weak
-        signals from foresight sources."""
-        from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        def finding(n: int, **extra) -> Finding:
-            base = {
-                "id": f"f-2026-W24-0{n}",
-                "date": date(2026, 6, 9),
-                "title": f"T{n}",
-                "url": f"https://example.com/b{n}",
-                "source_id": "darpa-news",
-                "region": "global",
-                "tier": 3,
-                "summary": f"Summary {n}.",
-            }
-            return Finding(**{**base, **extra})
-
+    async def test_board_tips_render_even_unclustered(self, llm):
+        """A board tip is editor-flagged: it stays visible even when grouping
+        placed it in no cluster at all."""
         workspace.write_findings_file(
             FindingsFile(
                 week="2026-W24",
                 created=date(2026, 6, 13),
                 findings=[
-                    finding(1, horizon="3-5y", significance=4, forward_note="Could reset EU fab plans."),
-                    finding(2, horizon="now"),
-                    finding(3, source_id="signals-watch", horizon="1-2y"),
-                ],
-            )
-        )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-
-        updates = await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24"),
-            services=Services(crawl=None, mail=None, vision=None),
-            llm=llm,
-        )
-
-        markdown = updates["digest_markdown"]
-        brewing = markdown.split("## What's brewing")[1].split("## What moved in each theme")[0]
-        assert "- _Summary 1._ Could reset EU fab plans. — [example.com](https://example.com/b1) (3-5y)" in brewing
-        assert "(3-5y)" in brewing
-        assert "Summary 3." in brewing, "foresight sources are weak signals"
-        assert "Summary 2." not in brewing
-        assert "### physical-ai" in markdown
-
-    async def test_finding_in_two_clusters_lists_both_once(self, llm):
-        """Regression: a finding assigned to two clusters in the same theme
-        used to print as two separate lines, one per cluster."""
-        from datetime import date as date_cls
-
-        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
-
-        def shared_entry(finding_id: str = "shared-1") -> ClusterEntry:
-            return ClusterEntry.model_validate(
-                {
-                    "week": "2026-W24",
-                    "finding_id": finding_id,
-                    "source_id": "darpa-news",
-                    "source_class": "programmes",
-                    "tier": 2,
-                    "region": "global",
-                    "date": "2026-06-09",
-                    "note": "Shared finding",
-                    "url": "https://example.com/shared",
-                }
-            )
-
-        workspace.append_cluster(
-            Cluster(id="cluster-a", name="Cluster A", opened="2026-W24", entries=[shared_entry()]),
-            theme="physical-ai",
-            created=date_cls(2026, 1, 8),
-        )
-        workspace.append_cluster(
-            Cluster(id="cluster-b", name="Cluster B", opened="2026-W24", entries=[shared_entry()]),
-            theme="physical-ai",
-            created=date_cls(2026, 1, 8),
-        )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        state = VisionWatchState.model_construct(week="2026-W24")
-
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
-        )
-
-        across = updates["digest_markdown"].split("## What moved in each theme")[1].split("## Trending this week")[0]
-        shared_lines = [line for line in across.splitlines() if "https://example.com/shared" in line]
-        assert len(shared_lines) == 1
-        assert "in cluster-a, cluster-b" in shared_lines[0]
-        # No board tips recorded this week: no tips section either.
-        assert "## Board tips this week" not in updates["digest_markdown"]
-
-    async def test_theme_section_caps_entry_lines(self, llm):
-        """A high-volume week must not print every entry: strongest first,
-        capped, with the overflow counted."""
-        from datetime import date as date_cls
-
-        from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
-
-        def entry(n: int) -> ClusterEntry:
-            return ClusterEntry.model_validate(
-                {
-                    "week": "2026-W24",
-                    "finding_id": f"f-{n:02d}",
-                    "source_id": "darpa-news",
-                    "source_class": "programmes",
-                    "significance": 5 - (n % 4),
-                    "region": "global",
-                    "date": f"2026-06-{9 - (n % 9):02d}",
-                    "note": f"Entry {n}",
-                    "url": f"https://example.com/{n}",
-                }
-            )
-
-        workspace.append_cluster(
-            Cluster(id="cluster-a", name="Cluster A", opened="2026-W24", entries=[entry(n) for n in range(14)]),
-            theme="agentic-ai",
-            created=date_cls(2026, 1, 8),
-        )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        state = VisionWatchState.model_construct(week="2026-W24")
-
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
-        )
-
-        across = updates["digest_markdown"].split("## What moved in each theme")[1].split("## Trending this week")[0]
-        item_lines = [line for line in across.splitlines() if line.startswith("- _Entry")]
-        overflow = [line for line in across.splitlines() if "more entries this week" in line]
-        assert len(item_lines) == 12
-        assert overflow == ["- (+2 more entries this week — see the theme's cluster log.)"]
-        # Most significant first, newest first within a level: entry 0 is the
-        # only significance-5 entry dated 2026-06-09.
-        assert item_lines[0] == "- _Entry 0_ — [example.com](https://example.com/0) — in cluster-a"
-
-    async def test_board_tips_render_in_own_section_even_unclustered(self, llm):
-        """A board tip is editor-flagged: it must stay visible in the digest
-        even when the grouping call left it in no cluster at all."""
-        from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
-
-        workspace.write_findings_file(
-            FindingsFile(
-                week="2026-W24",
-                created=date(2026, 6, 13),
-                findings=[
-                    Finding(
-                        id="f-2026-W24-01",
-                        date=date(2026, 6, 12),
-                        title="LLMs as a cognitive virus",
-                        url="https://arxiv.org/html/2609.03344v1",
+                    _digest_finding(
+                        "f-2026-W24-01",
+                        "https://arxiv.org/html/2609.03344v1",
                         source_id="board-tip",
-                        region="global",
-                        tier=4,
-                        theme_ids=["agentic-society"],
-                        datapoint="",
                         summary="An essay frames LLMs as a cognitive virus. [flagged by Test Sender]",
-                        significance=2,
-                        access_method="board-tip",
                     )
                 ],
             )
         )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
+        llm.handlers[StoryDigest] = make_story_handler()
 
-        updates = await digest_node_mod.digest_node(
-            VisionWatchState.model_construct(week="2026-W24"),
-            services=Services(crawl=None, mail=None, vision=None),
-            llm=llm,
-        )
+        markdown = (await self._run(llm))["digest_markdown"]
 
-        tips = updates["digest_markdown"].split("## Board tips this week")[1].split("## What moved in each theme")[0]
-        assert "LLMs as a cognitive virus" in tips
+        tips = markdown.split("## Board tips")[1]
+        assert "cognitive virus. [flagged by Test Sender]" in tips
         assert "https://arxiv.org/html/2609.03344v1" in tips
-        assert "flagged by Test Sender" in tips
 
-    async def test_off_theme_rejects_render_as_signal_group(self, llm):
-        from hipeac_agents.agents.vision_watch.nodes.digest import SignalGroups
-        from hipeac_agents.agents.vision_watch.schemas import RejectedFile, RejectedItem
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+    async def test_newly_converged_story_is_flagged_once(self, llm):
+        from hipeac_agents.agents.vision_watch.schemas import Cluster
 
-        workspace.write_rejected_file(
-            RejectedFile(
+        def entries(cid, weeks_and_classes):
+            return [
+                _digest_entry(week, f"{cid}-{n}", f"https://example.com/{cid}/{n}", source_class=source_class)
+                for n, (week, source_class) in enumerate(weeks_and_classes)
+            ]
+
+        crossing = entries(
+            "crossing",
+            [
+                ("2026-W22", "aggregators"),
+                ("2026-W23", "capital"),
+                ("2026-W24", "programmes"),
+                ("2026-W24", "aggregators"),
+            ],
+        )
+        already = entries(
+            "already",
+            [
+                ("2026-W20", "aggregators"),
+                ("2026-W21", "capital"),
+                ("2026-W22", "programmes"),
+                ("2026-W23", "aggregators"),
+                ("2026-W24", "capital"),
+            ],
+        )
+        for cid, name, items in (("crossing", "Crossing now", crossing), ("already", "Converged before", already)):
+            workspace.append_cluster(
+                Cluster(id=cid, name=name, opened="2026-W20", entries=items),
+                theme="agentic-ai",
+                created=date(2026, 1, 8),
+            )
+        llm.handlers[StoryDigest] = make_story_handler()
+
+        markdown = (await self._run(llm))["digest_markdown"]
+
+        converged = markdown.split("## Newly converged")[1]
+        assert "**Crossing now** (agentic-ai)" in converged
+        assert "Converged before" not in converged
+
+    async def test_signals_log_keeps_every_finding(self, llm):
+        workspace.write_findings_file(
+            FindingsFile(
                 week="2026-W24",
-                created=date(2026, 6, 12),
-                rejected=[
-                    RejectedItem(
-                        url="https://example.com/chips-act",
-                        claimed_title="Chips Act 2.0 hits right notes",
-                        source_id="science-business",
-                        reason="off_theme",
-                        summary="EU debates the budget behind its next chip subsidy round.",
-                    ),
-                    RejectedItem(
-                        url="https://example.com/korea-fab",
-                        claimed_title="S. Korea goes All In on AI",
-                        source_id="chinatalk",
-                        reason="off_theme",
-                        summary="Korea and Germany both announce new chip fab investment.",
-                    ),
+                created=date(2026, 6, 13),
+                findings=[
+                    _digest_finding("f-1", "https://example.com/a"),
+                    _digest_finding("f-2", "https://example.com/loose"),
                 ],
             )
         )
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
+        llm.handlers[StoryDigest] = make_story_handler()
+
+        await self._run(llm)
+
+        log = (workspace.weekly_digest_dir() / "digest-2026-W24-signals.md").read_text()
+        assert "### Humanoids" in log
+        assert "[Note f-1](https://example.com/a)" in log
+        assert "## Not in any story\n\n- [Summary f-2.](https://example.com/loose)" in log
+
+
+class TestStorySelection:
+    @pytest.fixture
+    def themes(self, data_dir):
+        return workspace.read_themes(data_dir)
+
+    @staticmethod
+    def _cluster_data(cid, theme, entries):
+        from hipeac_agents.agents.vision_watch.schemas import Cluster
+
+        return {
+            "theme": theme,
+            "cluster": Cluster(id=cid, name=cid.title(), opened="2026-W20", entries=entries),
+            "entries": entries,
+            "this_week": [e for e in entries if e.week == "2026-W24"],
+        }
+
+    def test_candidates_are_ranked_and_capped_per_theme(self, themes, data_dir):
+        from hipeac_agents.agents.vision_watch.nodes.digest.node import story_candidates
+
+        data = {
+            f"c{n}": self._cluster_data(
+                f"c{n}", "agentic-ai", [_digest_entry("2026-W24", f"c{n}", f"https://x/{n}", significance=n)]
+            )
+            for n in range(1, 6)
+        }
+        data["old"] = self._cluster_data(
+            "old", "agentic-ai", [_digest_entry("2026-W20", "old", "https://x/old", significance=5)]
         )
-        llm.handlers[SignalGroups] = lambda prompt: SignalGroups.model_validate(
-            {
-                "groups": [
-                    {
-                        "blurb": "EU and Asian states are racing on chip sovereignty.",
-                        "urls": ["https://example.com/chips-act", "https://example.com/korea-fab"],
-                    }
-                ]
-            }
-        )
-        state = VisionWatchState.model_construct(week="2026-W24")
 
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
-        )
+        candidates = story_candidates("2026-W24", themes, data, workspace.read_source_catalog(data_dir))
 
-        assert "## Also worth watching" in updates["digest_markdown"]
-        signals = updates["digest_markdown"].split("## Also worth watching")[1]
-        assert "EU and Asian states are racing on chip sovereignty." in signals
-        assert "https://example.com/chips-act" in signals
-        assert "https://example.com/korea-fab" in signals
+        assert [cid for cid, _ in candidates["agentic-ai"]] == ["c5", "c4", "c3", "c2"]
+        assert candidates["physical-ai"] == []
 
-    async def test_no_signal_call_without_off_theme_rejects(self, llm):
-        from hipeac_agents.agents.vision_watch.nodes.digest import SignalGroups
-        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+    def test_material_numbers_the_strongest_findings_and_scopes_to_the_week(self, themes):
+        from hipeac_agents.agents.vision_watch.nodes.digest.node import story_material
 
-        llm.handlers[DigestProse] = lambda prompt: DigestProse.model_validate(
-            {"lead": "L", "why_it_matters": "W", "europe": "GAP", "maturity": "watch, low"}
-        )
-        state = VisionWatchState.model_construct(week="2026-W24")
+        entries = [_digest_entry("2026-W24", f"e{n}", f"https://x/{n}", significance=n) for n in range(1, 6)]
+        entries.append(_digest_entry("2026-W23", "earlier", "https://x/earlier"))
+        story = self._cluster_data("story", "agentic-ai", entries)
 
-        updates = await digest_node_mod.digest_node(
-            state, services=Services(crawl=None, mail=None, vision=None), llm=llm
-        )
+        material, refs = story_material(themes, {"agentic-ai": [("story", story)]}, {"e5": "Could matter."})
 
-        assert "## Also worth watching" not in updates["digest_markdown"]
-        assert not [call for call in llm.calls if call[0] is SignalGroups]
+        assert refs == {"F1": "https://x/5", "F2": "https://x/4", "F3": "https://x/3", "F4": "https://x/2"}
+        assert "F1: Note e5 (source: robot-report; significance 5) Forward note: Could matter." in material
+        assert "6 findings · 1 source class · 2 weeks; 5 new this week" in material
+        assert "(no stories this week)" in material.split('THEME "physical-ai"')[1].split("THEME")[0]
 
 
 class TestGraph:

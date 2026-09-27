@@ -127,46 +127,6 @@ def is_candidate_trend(entries: list[schemas.ClusterEntry]) -> bool:
     )
 
 
-def threshold_progress(entries: list[schemas.ClusterEntry]) -> str:
-    """Render a cluster's progress toward the candidate-trend threshold.
-
-    Makes the promotion ladder visible: the board sees exactly which of the
-    four criteria (4 findings, 3 source classes, 3 weeks, a primary source) a
-    cluster already meets and which it needs.
-
-    :param entries: The cluster's log entries.
-    :returns: Text like ``"3/4 findings · 1/3 source classes · 2/3 weeks — needs one more source class"``.
-    """
-    findings = len(entries)
-    classes = reach(entries)
-    weeks = persistence(entries)
-    met = (
-        findings >= CANDIDATE_TREND_MIN_FINDINGS,
-        classes >= CANDIDATE_TREND_MIN_CLASSES,
-        weeks >= CANDIDATE_TREND_MIN_WEEKS,
-        has_primary_source(entries),
-    )
-    missing = []
-
-    if not met[0]:
-        missing.append(f"{CANDIDATE_TREND_MIN_FINDINGS - findings} more findings")
-    if not met[1]:
-        missing.append(f"{CANDIDATE_TREND_MIN_CLASSES - classes} more source classes")
-    if not met[2]:
-        missing.append(f"{CANDIDATE_TREND_MIN_WEEKS - weeks} more weeks")
-
-    progress = (
-        f"{findings}/{CANDIDATE_TREND_MIN_FINDINGS} findings · "
-        f"{classes}/{CANDIDATE_TREND_MIN_CLASSES} source classes · {weeks}/{CANDIDATE_TREND_MIN_WEEKS} weeks"
-    )
-
-    if not met[3]:
-        missing.append("a primary source (not only aggregators or commentary)")
-
-    needs = " — needs " + " and ".join(missing) if missing else " — threshold met"
-    return progress + needs
-
-
 def trend_status(entries: list[schemas.ClusterEntry]) -> str:
     """Derive a cluster's status label: strengthening, candidate-trend, or emerging.
 
