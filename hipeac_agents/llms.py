@@ -83,13 +83,20 @@ def load_models() -> Models:
 def usage_lines(usage: dict[str, Any]) -> list[str]:
     """Render a run's token usage per model, for the run summary.
 
-    Output tokens include any reasoning tokens, which are billed as output.
+    Output tokens include reasoning tokens, which are billed as output;
+    cached input is billed at a discount, so both are shown separately.
 
-    :param usage: Model name to its usage metadata (``input_tokens``, ``output_tokens``).
+    :param usage: Model name to its usage metadata, as LangChain collects it.
     :returns: One line per model, most input tokens first.
     """
     rows = sorted(usage.items(), key=lambda item: -(item[1].get("input_tokens") or 0))
-    return [
-        f"  {name}: {meta.get('input_tokens') or 0:,} tokens in, {meta.get('output_tokens') or 0:,} out"
-        for name, meta in rows
-    ]
+    lines = []
+    for name, meta in rows:
+        cached = (meta.get("input_token_details") or {}).get("cache_read") or 0
+        reasoning = (meta.get("output_token_details") or {}).get("reasoning") or 0
+        line = f"  {name}: {meta.get('input_tokens') or 0:,} tokens in"
+        line += f" ({cached:,} cached)" if cached else ""
+        line += f", {meta.get('output_tokens') or 0:,} out"
+        line += f" ({reasoning:,} reasoning)" if reasoning else ""
+        lines.append(line)
+    return lines

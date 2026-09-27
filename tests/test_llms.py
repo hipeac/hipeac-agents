@@ -67,3 +67,16 @@ def test_usage_lines_rank_models_by_input_tokens():
         "  mini: 800,000 tokens in, 40,000 out",
         "  luna: 9,000 tokens in, 700 out",
     ]
+
+
+def test_usage_lines_show_cached_input_and_reasoning_output():
+    usage = {
+        "gpt-6-sol": {
+            "input_tokens": 12_000,
+            "output_tokens": 900,
+            "input_token_details": {"cache_read": 8_000},
+            "output_token_details": {"reasoning": 600},
+        }
+    }
+
+    assert llms.usage_lines(usage) == ["  gpt-6-sol: 12,000 tokens in (8,000 cached), 900 out (600 reasoning)"]
