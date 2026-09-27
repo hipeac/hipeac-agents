@@ -98,6 +98,18 @@ The channel follows from the fields: `arxiv` (API, any date range), `feed_url` (
 
 A fresh clone therefore harvests nothing until you supply a `config/` directory of your own.
 
+## Models
+
+Models are configured by capability tier, shared by every agent, never by task:
+
+| Setting              | Tier                                  | vision-watch uses it for                   |
+| -------------------- | ------------------------------------- | ------------------------------------------ |
+| `LLM_SMALL_MODEL`    | cheap, high volume (default `gpt-4o-mini`) | harvest: triage, picks, verdicts (hundreds of calls a week) |
+| `LLM_BASE_MODEL`     | everyday judgement                    | clustering (one call a week)               |
+| `LLM_THINKING_MODEL` | the few calls people read (defaults to the base model) | weekly digest (one call), monthly syntheses (at most 11) |
+
+`LLM_PROVIDER` picks the provider (default `openai`). Every run prints the model of each tier and ends with its token usage per model; `replay-gate --dry-run` estimates tokens before spending any.
+
 ## Services
 
 Agents depend on protocols, never on providers directly. Each service is configured by its own environment variable, and skipped when unset.
