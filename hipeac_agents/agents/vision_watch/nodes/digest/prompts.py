@@ -21,13 +21,14 @@ Write:
 
 House style:
 - Plain, concise English. No hype and no filler ("in a significant move",
-  "it remains to be seen").
+  "it remains to be seen"). State a limit of the evidence only when it
+  changes the reading; no routine caveats ("this does not yet establish").
 - A story is a title of 3-6 words, then 2-3 sentences: what is happening, and
   why it matters for where this line of the Vision is heading.
 - Mention Europe only when the story is about Europe's position: a European
   actor, programme or rule, or a dependency Europe has. Do not end stories
   with a generic sentence about Europe.
-- Put each citation on the words that state the fact, inside the sentence,
+- Put each citation on the short phrase (3-8 words) that states the fact, inside the sentence,
   by finding id: "Openchip [raised €115M for energy-efficient AI chips](F12)
   while EuroHPC [opened a call for AI Factories](F14)". Never put a citation
   after the sentence as a label ("... chips [Openchip funding](F12)."). Cite

@@ -40,7 +40,7 @@ def test_defaults_follow_the_gpt_6_lineup_and_old_names_are_ignored(monkeypatch,
     assert {name: str(tier) for name, tier in llms.tiers().items()} == {
         "small": "gpt-6-luna (reasoning: none)",
         "base": "gpt-6-sol (reasoning: low)",
-        "thinking": "gpt-6-astra (reasoning: low)",
+        "thinking": "gpt-6-sol (reasoning: low)",
     }
 
 

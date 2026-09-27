@@ -35,7 +35,7 @@ LLM_SMALL_MODEL = os.environ.get("LLM_SMALL_MODEL", "gpt-6-luna")
 LLM_SMALL_REASONING = os.environ.get("LLM_SMALL_REASONING", "none")
 LLM_BASE_MODEL = os.environ.get("LLM_BASE_MODEL", "gpt-6-sol")
 LLM_BASE_REASONING = os.environ.get("LLM_BASE_REASONING", "low")
-LLM_THINKING_MODEL = os.environ.get("LLM_THINKING_MODEL", "gpt-6-astra")
+LLM_THINKING_MODEL = os.environ.get("LLM_THINKING_MODEL", "gpt-6-sol")
 LLM_THINKING_REASONING = os.environ.get("LLM_THINKING_REASONING", "low")
 
 SENTRY_DSN = os.environ.get("SENTRY_DSN") or None

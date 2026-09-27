@@ -106,7 +106,7 @@ Models are configured by capability tier, shared by every agent, never by task:
 | ---------- | ------------------------- | ------------------------------------------------------------ |
 | `small`    | `gpt-6-luna` (`none`)     | harvest: triage, picks, verdicts — hundreds of calls a week  |
 | `base`     | `gpt-6-sol` (`low`)       | clustering — one call a week                                 |
-| `thinking` | `gpt-6-astra` (`low`)     | weekly digest (one call), monthly syntheses (at most 11)     |
+| `thinking` | `gpt-6-sol` (`low`)       | weekly digest (one call), monthly syntheses (at most 11)     |
 
 Each tier is set with `LLM_<TIER>_MODEL` and `LLM_<TIER>_REASONING`. An empty reasoning value sends none, for models without reasoning. `temperature=0` is sent only when reasoning is off, because reasoning models reject it otherwise.
 
