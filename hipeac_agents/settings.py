@@ -27,7 +27,11 @@ AGENTMAIL_API_KEY = os.environ.get("AGENTMAIL_API_KEY") or None
 HIPEAC_MCP_URL = os.environ.get("HIPEAC_MCP_URL") or None
 
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
-LLM_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-5.6-luna")
-LLM_JUDGEMENT_MODEL = os.environ.get("OPENAI_JUDGEMENT_MODEL", "gpt-4o-mini")
+# Three capability tiers, shared by every agent: a cheap small model for
+# high-volume classification, a base model for everyday judgement, and a
+# thinking model for the few calls whose output people read.
+LLM_SMALL_MODEL = os.environ.get("LLM_SMALL_MODEL", "gpt-4o-mini")
+LLM_BASE_MODEL = os.environ.get("LLM_BASE_MODEL", "gpt-5.6-luna")
+LLM_THINKING_MODEL = os.environ.get("LLM_THINKING_MODEL") or LLM_BASE_MODEL
 
 SENTRY_DSN = os.environ.get("SENTRY_DSN") or None

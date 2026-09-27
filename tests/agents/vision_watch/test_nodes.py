@@ -19,6 +19,7 @@ from hipeac_agents.agents.vision_watch.nodes.harvest.models import (
     GateVerdict,
 )
 from hipeac_agents.agents.vision_watch.schemas import FindingsFile
+from hipeac_agents.llms import Models
 from hipeac_agents.services.factory import Services
 from hipeac_agents.services.types import MailMessage
 from tests.agents.vision_watch._fakes import (
@@ -1007,8 +1008,32 @@ class TestStorySelection:
 
 
 class TestGraph:
+    def test_each_node_runs_on_its_tier(self):
+        """Harvest's hundreds of calls go to the small model; the digests, which
+        the board reads, to the thinking model."""
+        models = Models(small="small", base="base", thinking="thinking")
+        compiled = graph.build_graph(
+            ["harvest", "cluster", "digest", "monthly"], Services(crawl=None, mail=None, vision=None), models
+        )
+
+        def tier(node: str) -> str:
+            runnable = compiled.builder.nodes[node].runnable
+            return (getattr(runnable, "afunc", None) or runnable.func).keywords["llm"]
+
+        assert [tier(n) for n in ("harvest", "cluster", "digest", "monthly")] == [
+            "small",
+            "base",
+            "thinking",
+            "thinking",
+        ]
+
     def test_build_graph_wires_requested_nodes(self):
-        compiled = graph.build_graph(["cluster", "digest"], Services(crawl=None, mail=None, vision=None), FakeLLM())
+        llm = FakeLLM()
+        compiled = graph.build_graph(
+            ["cluster", "digest"],
+            Services(crawl=None, mail=None, vision=None),
+            Models(small=llm, base=llm, thinking=llm),
+        )
 
         assert compiled is not None
 

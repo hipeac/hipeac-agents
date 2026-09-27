@@ -32,13 +32,13 @@ def fake_graph(monkeypatch):
 
         return Services(crawl=None, mail=None, vision=None)
 
-    def fake_build(nodes, services, judgement_llm, prose_llm=None):
-        builds.append((nodes, services, judgement_llm, prose_llm))
+    def fake_build(nodes, services, models):
+        builds.append((nodes, services, models))
         return FakeCompiled(nodes)
 
     monkeypatch.setattr("hipeac_agents.cli.graph.build_graph", fake_build)
     monkeypatch.setattr("hipeac_agents.cli._llm_configured", lambda: True)
-    monkeypatch.setattr("hipeac_agents.cli._build_llms", lambda: (object(), object()))
+    monkeypatch.setattr("hipeac_agents.cli.load_models", lambda: object())
     monkeypatch.setattr("hipeac_agents.cli.load_services_async", fake_services)
     return builds
 
@@ -224,3 +224,24 @@ class TestRedo:
 
         assert workspace.read_weekly_digest("2026-W24", data_dir) is None
         assert "set aside for a redo" in capsys.readouterr().out
+
+
+class TestModelTiers:
+    async def test_run_names_each_tier_and_reports_token_usage(self, fake_graph, monkeypatch, capsys):
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        @contextmanager
+        def fake_usage():
+            yield SimpleNamespace(usage_metadata={"gpt-4o-mini": {"input_tokens": 1200, "output_tokens": 80}})
+
+        monkeypatch.setattr("hipeac_agents.cli.get_usage_metadata_callback", fake_usage)
+        monkeypatch.setattr(
+            "hipeac_agents.cli.model_names", lambda: {"small": "gpt-4o-mini", "base": "luna", "thinking": "sol"}
+        )
+
+        await cli.main(["weekly-digest"])
+
+        out = capsys.readouterr().out
+        assert "models: small=gpt-4o-mini, base=luna, thinking=sol" in out
+        assert "gpt-4o-mini: 1,200 tokens in, 80 out" in out

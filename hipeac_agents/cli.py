@@ -21,9 +21,12 @@ import sys
 from datetime import date
 from pathlib import Path
 
+from langchain_core.callbacks import get_usage_metadata_callback
+
 from hipeac_agents import settings
 from hipeac_agents.agents.vision_watch import cadence, graph, replay, snapshots, workspace
 from hipeac_agents.agents.vision_watch.state import VisionWatchState
+from hipeac_agents.llms import load_models, model_names, usage_lines
 from hipeac_agents.services.factory import load_services_async
 
 
@@ -37,23 +40,6 @@ def _llm_configured() -> bool:
     :returns: ``True`` when a provider API key is present.
     """
     return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY"))
-
-
-def _build_llms() -> tuple[object, object]:
-    """Build the two chat models: harvest judgement, and cluster/digest prose.
-
-    Judgement calls are cheap classification tasks — a small model suffices
-    and keeps the weekly run affordable; digest prose keeps the main model.
-    Both run at temperature 0: same inputs must give same candidates, or the
-    scrape cache stops paying off across runs.
-
-    :returns: ``(judgement_llm, prose_llm)``.
-    """
-    from langchain.chat_models import init_chat_model
-
-    judgement = init_chat_model(settings.LLM_JUDGEMENT_MODEL, model_provider=settings.LLM_PROVIDER, temperature=0)
-    prose = init_chat_model(settings.LLM_MODEL, model_provider=settings.LLM_PROVIDER, temperature=0)
-    return judgement, prose
 
 
 def _initial_state(
@@ -162,10 +148,12 @@ async def _replay_gate(
     if apply:
         weeks = replay.install_replay(Path(apply))
         print(f"installed {len(weeks)} replayed weeks; archived evidence-v1/ and clusters-v1/")
-        compiled = graph.build_graph(["cluster"], Services(crawl=None, mail=None, vision=None), *_build_llms())
-        for week in weeks:
-            await compiled.ainvoke(VisionWatchState(week=week))
-            print(f"  {week}: re-clustered")
+        compiled = graph.build_graph(["cluster"], Services(crawl=None, mail=None, vision=None), load_models())
+        with get_usage_metadata_callback() as usage:
+            for week in weeks:
+                await compiled.ainvoke(VisionWatchState(week=week))
+                print(f"  {week}: re-clustered")
+        _print_usage(usage.usage_metadata)
         return 0
 
     if not (first and last):
@@ -179,19 +167,37 @@ async def _replay_gate(
     if dry_run:
         return 0
 
-    judgement, _prose = _build_llms()
-    ctx = HarvestContext(judgement)
+    _print_models()
+    ctx = HarvestContext(load_models().small)
     themes, catalog = workspace.read_themes(), workspace.read_source_catalog()
     results = []
-    for week in weeks:
-        findings_file, rejected_file, replayed = await replay.replay_week(ctx, week, themes, catalog)
-        results.append((week, findings_file, rejected_file, replayed))
-        print(f"  {week}: {len(findings_file.findings)} findings")
+    with get_usage_metadata_callback() as usage:
+        for week in weeks:
+            findings_file, rejected_file, replayed = await replay.replay_week(ctx, week, themes, catalog)
+            results.append((week, findings_file, rejected_file, replayed))
+            print(f"  {week}: {len(findings_file.findings)} findings")
+    _print_usage(usage.usage_metadata)
 
     report = replay.render_report([(w, f, c) for w, f, _r, c in results], themes, calls)
     folder = replay.write_replay([(w, f, r) for w, f, r, _c in results], report, f"{first}_{last}")
     print(f"replay written to {folder} — review report.md, then: replay-gate --apply {folder}")
     return 0
+
+
+def _print_models() -> None:
+    """Say which model each tier runs on, so a wrong setting shows up at once."""
+    print("models: " + ", ".join(f"{tier}={name}" for tier, name in model_names().items()))
+
+
+def _print_usage(usage: dict) -> None:
+    """Print the run's token usage per model.
+
+    :param usage: Model name to usage metadata, as collected during the run.
+    """
+    if usage:
+        print("token usage:")
+        for line in usage_lines(usage):
+            print(line)
 
 
 def _init_sentry() -> None:
@@ -273,18 +279,21 @@ async def _run(
         backup = workspace.purge_week(week, keep_evidence="harvest" not in nodes)
         print(f"week {week} set aside for a redo; backup in {backup}")
 
-    compiled = graph.build_graph(nodes, services, *_build_llms())
-    result = await compiled.ainvoke(
-        _initial_state(
-            week,
-            window,
-            source_limit=source_limit,
-            source_only=source_only or [],
-            skip_sweep=skip_sweep,
-            send=send,
-            month=month,
+    _print_models()
+    compiled = graph.build_graph(nodes, services, load_models())
+    with get_usage_metadata_callback() as usage:
+        result = await compiled.ainvoke(
+            _initial_state(
+                week,
+                window,
+                source_limit=source_limit,
+                source_only=source_only or [],
+                skip_sweep=skip_sweep,
+                send=send,
+                month=month,
+            )
         )
-    )
+    _print_usage(usage.usage_metadata)
 
     if month:
         print(f"month {month}: digest {'sent' if result.get('digest_sent') else 'written'}")

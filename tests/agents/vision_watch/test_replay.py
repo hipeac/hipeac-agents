@@ -168,7 +168,7 @@ async def test_install_archives_v1_and_carries_source_reports(recorded, data_dir
 
 
 async def test_cli_dry_run_spends_nothing(recorded, data_dir, monkeypatch, capsys):
-    monkeypatch.setattr("hipeac_agents.cli._build_llms", lambda: pytest.fail("a dry run must not build models"))
+    monkeypatch.setattr("hipeac_agents.cli.load_models", lambda: pytest.fail("a dry run must not build models"))
 
     exit_code = await cli.main(
         ["replay-gate", "--from", "2026-W30", "--to", WEEK, "--dry-run", "--data-dir", str(data_dir)]
