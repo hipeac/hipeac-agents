@@ -66,6 +66,18 @@ class GateVerdict(BaseModel):
     title_detail: str = Field(default="", description="Why the title does not match, when it does not")
 
 
+class IndexedVerdict(GateVerdict):
+    """One candidate's verdict inside a batch, tied to the candidate's number."""
+
+    index: int = Field(description="The candidate's number in the list")
+
+
+class GateBatch(BaseModel):
+    """Verdicts for a batch of candidates, one per candidate."""
+
+    verdicts: list[IndexedVerdict] = []
+
+
 class TriageItem(BaseModel):
     """One candidate's triage decision."""
 

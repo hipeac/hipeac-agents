@@ -39,11 +39,34 @@ class FakeLLM:
         if schema is str:
             return "In brief text."
         handler = self.handlers.get(schema)
+        if handler is None and getattr(schema, "__name__", "") == "GateBatch":
+            return self._batch_from_single_verdicts(schema, prompt)
         if handler is None and getattr(schema, "__name__", "") == "TriageVerdict":
             return schema(items=[])  # keep everything unless a test scripts triage
         if handler is None:
             raise AssertionError(f"no scripted handler for {schema.__name__}")
         return handler(prompt) if callable(handler) else handler
+
+    def _batch_from_single_verdicts(self, schema, prompt: str):
+        """Answer a verdict batch with the scripted single-candidate verdict handler.
+
+        Each candidate is judged on the shared prompt plus its own section, so
+        handlers that look at the candidate's text keep working.
+        """
+        import re
+
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import IndexedVerdict
+
+        single = next((h for t, h in self.handlers.items() if getattr(t, "__name__", "") == "GateVerdict"), None)
+        if single is None:
+            raise AssertionError("no scripted handler for GateVerdict")
+        head, *sections = re.split(r"\n\n(?=Candidate \d+:\n)", prompt)
+        verdicts = []
+        for section in sections:
+            index = int(re.match(r"Candidate (\d+):", section).group(1))
+            verdict = single(f"{head}\n\n{section}") if callable(single) else single
+            verdicts.append(IndexedVerdict(index=index, **verdict.model_dump()))
+        return schema(verdicts=verdicts)
 
 
 class FakeCrawl:

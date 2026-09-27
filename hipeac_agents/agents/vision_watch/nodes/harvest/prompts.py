@@ -40,23 +40,24 @@ Return one decision per candidate, by its number.
 """
 
 SELECT_NOTABLE = """\
-You are screening a long list of research papers for the HiPEAC Vision 2027
-watch, a forward-looking roadmap for computing in Europe. Most papers are
-incremental; the watch wants only the few that are real signals for the
-themes below: a result that changes what is possible, a new direction, a
-strong benchmark or negative result, a survey mapping a shifting field, or
-work tied to a major system, standard or policy.
+You are screening a list of items — news, announcements or research papers —
+from one source for the HiPEAC Vision 2027 watch, a forward-looking roadmap
+for computing in Europe. Most items are routine; the watch wants only the few
+that are real signals for the themes below: a result that changes what is
+possible, a new direction, money or a rule that commits the future, a strong
+benchmark or negative result, a survey mapping a shifting field, or work tied
+to a major system, standard or policy.
 
-Pick AT MOST {budget} papers from the numbered list, most notable first.
-Fewer is fine; none is fine. Judge from the titles (and abstracts if given).
+Pick AT MOST {budget} items from the numbered list, most notable first.
+Fewer is fine; none is fine. Judge from the titles (and summaries if given).
 """
 
 GATE = """\
-You are judging one candidate for the HiPEAC Vision 2027 watch, a
+You are judging candidates for the HiPEAC Vision 2027 watch, a
 forward-looking roadmap for computing in Europe. The themes are the broad
 lines of the Vision, each with open questions the next edition asks; the board
 wants early signals of where each line is heading, not a log of what happened.
-Answer in one verdict:
+Give each candidate its own verdict, judged on its own:
 
 1. THEMES: which themes the candidate is a genuine signal for (theme_ids),
 using each theme's description, open questions and what to look for. Do not

@@ -197,3 +197,74 @@ class TestSelectNotable:
 
         assert picked == [0, 1]
         assert len(llm.calls) == 4, "three batches, then one final pick among their survivors"
+
+
+class TestFewerCalls:
+    async def test_busy_source_is_picked_down_before_the_verdict(self, themes):
+        """Regression: busy sources had every candidate judged, then the
+        4-per-source cap threw most verdicts away (191 in W39)."""
+        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import PREVERDICT_PICK
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import NotableSelection
+
+        candidates = [_candidate(n) for n in range(20)]
+        crawl = FakeCrawl(pages={c.url: (c.title, "t") for c in candidates})
+        llm = FakeLLM({NotableSelection: NotableSelection(indices=[3, 1]), GateVerdict: _verdict()})
+
+        findings, rejected = await _gate(llm, crawl, candidates, themes)
+
+        assert [f.url for f in findings] == ["https://example.com/3", "https://example.com/1"]
+        assert sum(r.reason == "source_cap" for r in rejected) == 18
+        assert len(crawl.scrape_calls) == 2, "only picked candidates are scraped"
+        assert PREVERDICT_PICK == 8
+
+    async def test_verdicts_are_batched(self, themes):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import GateBatch
+
+        candidates = [_candidate(n) for n in range(6)]
+        crawl = FakeCrawl(pages={c.url: (c.title, "t") for c in candidates})
+        llm = FakeLLM({GateVerdict: _verdict()})
+
+        findings, _ = await _gate(llm, crawl, candidates, themes)
+
+        assert len(findings) == 6
+        schemas = [schema for schema, _ in llm.calls]
+        assert schemas.count(GateBatch) == 1
+        assert GateVerdict not in schemas
+
+    async def test_candidate_missing_from_a_batch_answer_is_judged_alone(self, themes):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import GateBatch, IndexedVerdict
+
+        candidates = [_candidate(n) for n in range(3)]
+        crawl = FakeCrawl(pages={c.url: (c.title, "t") for c in candidates})
+        partial = GateBatch(
+            verdicts=[
+                IndexedVerdict(index=0, **_verdict().model_dump()),
+                IndexedVerdict(index=9, **_verdict().model_dump()),
+            ]
+        )
+        llm = FakeLLM({GateBatch: partial, GateVerdict: _verdict()})
+
+        findings, _ = await _gate(llm, crawl, candidates, themes)
+
+        assert len(findings) == 3
+        assert sum(schema is GateVerdict for schema, _ in llm.calls) == 2, "indices 1 and 2 were missing"
+
+    async def test_tips_are_judged_one_by_one_with_the_tip_rule(self, themes):
+        candidates = [_candidate(n) for n in range(2)]
+        crawl = FakeCrawl(pages={c.url: (c.title, "t") for c in candidates})
+        llm = FakeLLM({GateVerdict: _verdict()})
+
+        await _gate(llm, crawl, candidates, themes, tip=True)
+
+        prompts = [prompt for schema, prompt in llm.calls if schema is GateVerdict]
+        assert len(prompts) == 2
+        assert all("board tip" in prompt for prompt in prompts)
+
+    async def test_screening_calls_use_the_short_theme_outline(self, themes):
+        llm = FakeLLM({TriageVerdict: _drop()})
+
+        await HarvestContext(llm).triage([("t", "s")], themes)
+
+        prompt = llm.calls[0][1]
+        assert themes[0].outline() in prompt
+        assert "Open questions" not in prompt

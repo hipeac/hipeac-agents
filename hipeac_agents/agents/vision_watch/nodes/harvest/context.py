@@ -12,7 +12,7 @@ from typing import Any
 from hipeac_agents.agents.vision_watch import schemas
 
 from . import prompts
-from .models import CandidateList, GateVerdict, NearMatchGroups, NotableSelection, TriageVerdict
+from .models import CandidateList, GateBatch, GateVerdict, NearMatchGroups, NotableSelection, TriageVerdict
 
 
 # Cap on page markdown fed to the extraction call — listing pages can be
@@ -25,6 +25,10 @@ TRIAGE_BATCH = 40
 
 # Titles per notable-selection call: titles are short, so a long list fits.
 SELECT_BATCH = 100
+
+# Candidates per verdict call: the theme list is sent once per batch, not
+# once per candidate; small enough that each still gets a careful verdict.
+VERDICT_BATCH = 8
 
 
 class HarvestContext:
@@ -80,7 +84,7 @@ class HarvestContext:
         :param themes: The themes.
         :returns: The indices of the candidates to keep.
         """
-        questions = "\n".join(t.brief() for t in themes)
+        questions = "\n".join(t.outline() for t in themes)
         kept: set[int] = set()
         for offset in range(0, len(items), TRIAGE_BATCH):
             batch = items[offset : offset + TRIAGE_BATCH]
@@ -111,14 +115,14 @@ class HarvestContext:
         if not items:
             return []
 
-        themes_text = "\n".join(t.brief() for t in themes)
+        themes_text = "\n".join(t.outline() for t in themes)
 
         async def pick(indices: list[int]) -> list[int]:
             lines = "\n".join(
                 f"{n}. {items[i][0]}" + (f" — {items[i][1][:200]}" if items[i][1] else "")
                 for n, i in enumerate(indices)
             )
-            prompt = prompts.SELECT_NOTABLE.format(budget=budget) + f"\n\nThemes:\n{themes_text}\n\nPapers:\n{lines}"
+            prompt = prompts.SELECT_NOTABLE.format(budget=budget) + f"\n\nThemes:\n{themes_text}\n\nItems:\n{lines}"
             chosen = (await self._invoke(NotableSelection, prompt)).indices
             picked = [indices[n] for n in dict.fromkeys(chosen) if 0 <= n < len(indices)]
             return picked[:budget]
@@ -166,6 +170,46 @@ class HarvestContext:
             + f"\n\nClaimed headline: {item_title}\nClaimed summary: {item_summary}\nActual page title: {page_title}"
             + tip_suffix,
         )
+
+    async def gate_batch(self, items: list[tuple[str, str, str]], themes: list[schemas.ThemeDef]) -> list[GateVerdict]:
+        """Judge several candidates, ``VERDICT_BATCH`` per call.
+
+        LLM judgement call (verification gate) — see ``prompts.GATE``. A lone
+        candidate gets the single-candidate call; a candidate the model leaves
+        out of a batch answer is judged again on its own, so every candidate
+        gets exactly one verdict.
+
+        :param items: ``(claimed headline, claimed summary, actual page title)`` per candidate.
+        :param themes: The themes.
+        :returns: One verdict per item, in order.
+        """
+        if len(items) == 1:
+            return [await self.gate_candidate(*items[0], themes)]
+
+        questions = "\n".join(t.brief() for t in themes)
+        verdicts: list[GateVerdict | None] = [None] * len(items)
+
+        for offset in range(0, len(items), VERDICT_BATCH):
+            batch = items[offset : offset + VERDICT_BATCH]
+            listing = "\n\n".join(
+                f"Candidate {i}:\nClaimed headline: {title}\nClaimed summary: {summary}\nActual page title: {page}"
+                for i, (title, summary, page) in enumerate(batch)
+            )
+            answer = await self._invoke(
+                GateBatch,
+                prompts.GATE
+                + f"\n\nThemes:\n{questions}"
+                + "\n\nReturn one verdict per candidate below, with its number as index."
+                + f"\n\n{listing}",
+            )
+            for verdict in answer.verdicts:
+                if 0 <= verdict.index < len(batch) and verdicts[offset + verdict.index] is None:
+                    verdicts[offset + verdict.index] = GateVerdict.model_validate(verdict.model_dump(exclude={"index"}))
+
+        for i, verdict in enumerate(verdicts):
+            if verdict is None:
+                verdicts[i] = await self.gate_candidate(*items[i], themes)
+        return verdicts
 
     async def near_match_groups(self, items: list[tuple[str, str]]) -> NearMatchGroups:
         """Group finding ids that are the same underlying event.

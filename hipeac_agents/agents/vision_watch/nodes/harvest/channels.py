@@ -33,6 +33,10 @@ from .models import CandidateItem
 
 logger = logging.getLogger(__name__)
 
+# Candidates per source that reach the full verdict each week. The source cap
+# keeps at most 4 findings per source, so a few more leave the verdict room.
+PREVERDICT_PICK = 8
+
 
 def _days_outside(item_date: date, window_start: date, window_end: date) -> int:
     """Days a date falls outside the harvest window (0 when inside).
@@ -110,8 +114,9 @@ async def gate_candidates(
     """Gate one source's candidates: free checks, one triage call, then verification.
 
     Order is cheapest first: window and duplicate cost nothing; one batched
-    triage call per source decides which candidates could move a watch
-    question; only those are scraped and get the full verdict. Gate failures
+    triage call per source decides which candidates could be a signal; a
+    busy source then keeps only its ``PREVERDICT_PICK`` most notable; only
+    those are scraped, and they are judged in batches. Gate failures
     never drop silently: every reject carries its reason.
 
     :param candidates: The source's candidates.
@@ -144,20 +149,41 @@ async def gate_candidates(
         )
         survivors = [c for i, c in enumerate(survivors) if i in kept]
 
-    verified: list[Finding] = []
+    # A busy source (an aggregator, a big newsletter) can pass dozens of
+    # candidates; at most 4 are kept anyway, so pick the notable ones before
+    # paying for full verdicts on the rest.
+    if not tip and len(survivors) > PREVERDICT_PICK:
+        picked = await ctx.select_notable([(c.title, c.summary) for c in survivors], themes, PREVERDICT_PICK)
+        rejected.extend(
+            _reject(c, source_id, "source_cap", f"not among the source's {PREVERDICT_PICK} most notable candidates")
+            for i, c in enumerate(survivors)
+            if i not in set(picked)
+        )
+        survivors = [survivors[i] for i in picked]
+
+    prepared: list[tuple[CandidateItem, ScrapeResult, date | None]] = []
     for candidate in survivors:
-        finding, reject = await _verify_candidate(
-            ctx,
-            services,
-            candidate,
-            source,
-            window_start,
-            window_end,
-            themes,
-            source_id,
-            access_method,
-            tip,
-            (known_pages or {}).get(candidate.url),
+        ready, reject = await _prepare_candidate(
+            services, candidate, window_start, window_end, source_id, tip, (known_pages or {}).get(candidate.url)
+        )
+        if reject:
+            rejected.append(reject)
+        else:
+            prepared.append(ready)
+
+    if tip:
+        verdicts = [
+            await ctx.gate_candidate(c.title, c.summary, page.title, themes, tip=True) for c, page, _ in prepared
+        ]
+    elif prepared:
+        verdicts = await ctx.gate_batch([(c.title, c.summary, page.title) for c, page, _ in prepared], themes)
+    else:
+        verdicts = []
+
+    verified: list[Finding] = []
+    for (candidate, page, item_date), verdict in zip(prepared, verdicts, strict=True):
+        finding, reject = _judged(
+            candidate, page, item_date, verdict, source, window_end, themes, source_id, access_method, tip
         )
         if finding:
             verified.append(finding)
@@ -167,24 +193,20 @@ async def gate_candidates(
     return verified, rejected
 
 
-async def _verify_candidate(
-    ctx: HarvestContext,
+async def _prepare_candidate(
     services: Services,
     candidate: CandidateItem,
-    source: schemas.SourceEntry | None,
     window_start: date,
     window_end: date,
-    themes: list[schemas.ThemeDef],
     source_id: str,
-    access_method: str,
     tip: bool,
     known_page: ScrapeResult | None,
-) -> tuple[Finding | None, RejectedItem | None]:
-    """Verify one triaged candidate: liveness, scrape, date, forward-looking verdict.
+) -> tuple[tuple[CandidateItem, ScrapeResult, date | None] | None, RejectedItem | None]:
+    """Get a triaged candidate ready for its verdict: liveness, scrape, date.
 
     :param known_page: The item's page when a structured source already
         carries it (arXiv): no liveness check and no scrape are needed.
-    :returns: ``(finding, None)`` when verified, ``(None, reject)`` otherwise.
+    :returns: ``((candidate, page, date), None)`` when ready, ``(None, reject)`` otherwise.
     """
     item_date = parse_iso_date(candidate.date) or parse_iso_date(candidate.summary)
 
@@ -208,8 +230,25 @@ async def _verify_candidate(
     if item_date is None and not tip:
         return None, _reject(candidate, source_id, "undated", "no date in the source, the text or the page")
 
-    verdict = await ctx.gate_candidate(candidate.title, candidate.summary, page.title, themes, tip=tip)
+    return (candidate, page, item_date), None
 
+
+def _judged(
+    candidate: CandidateItem,
+    page: ScrapeResult,
+    item_date: date | None,
+    verdict: Any,
+    source: schemas.SourceEntry | None,
+    window_end: date,
+    themes: list[schemas.ThemeDef],
+    source_id: str,
+    access_method: str,
+    tip: bool,
+) -> tuple[Finding | None, RejectedItem | None]:
+    """Turn a candidate's verdict into a finding, or the reason it is rejected.
+
+    :returns: ``(finding, None)`` when verified, ``(None, reject)`` otherwise.
+    """
     if not verdict.title_matches and not tip:
         return None, _reject(candidate, source_id, "title_mismatch", verdict.title_detail)
 
@@ -429,7 +468,7 @@ async def harvest_feed_source(
 ARXIV_LISTING = "https://arxiv.org/list/{category}/pastweek?show=2000"
 # Papers per category that reach the full verdict each week: busy categories
 # announce hundreds, nearly all incremental; the source cap keeps 4 of these.
-ARXIV_WEEKLY_PICK = 12
+ARXIV_WEEKLY_PICK = 8
 ARXIV_ABSTRACT = "https://arxiv.org/abs/{paper_id}"
 
 _ARXIV_DAY = re.compile(r"<h3>\s*(\w{3}, \d{1,2} \w{3} \d{4})")

@@ -180,6 +180,14 @@ class ThemeDef(BaseModel):
         """The name readers see: the title, or the id when no title is set."""
         return self.title or self.theme
 
+    def outline(self) -> str:
+        """Render the theme in one short line, for screening calls that see many items.
+
+        :returns: One line: id, description, and what to look for.
+        """
+        line = f"- {self.theme}: {' '.join(self.description.split())}"
+        return line + (f" Look for: {', '.join(self.look_for)}" if self.look_for else "")
+
     def brief(self) -> str:
         """Render the theme for a judgement prompt.
 
