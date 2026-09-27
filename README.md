@@ -22,7 +22,7 @@ The pipeline is `harvest -> health` and `cluster -> digest`, with a separate `mo
 
 The editorial week runs **Saturday through Friday**; a digest is labelled by the ISO week of its closing Friday, e.g. `2026-W37`. Without `--on`, a run targets the most recently closed week: on a Saturday, the week that ended the day before.
 
-Judgement-free logic — gates, tallies, thresholds, ranking — is plain deterministic Python, callable without an LLM. Prompts are reserved for genuine judgement: relevance, tiering, grouping, prose.
+Judgement-free logic — gates, tallies, thresholds, ranking — is plain deterministic Python, callable without an LLM. Prompts are reserved for genuine judgement: relevance, significance, grouping, prose.
 
 ## Usage
 
@@ -76,11 +76,11 @@ The themes and the source catalog are **editorial input, owned by a human** — 
 
 `themes.yaml` lists the Vision's broad lines: each theme has an id, a plain-words `description`, the open `questions` the next Vision asks in it, what to `look_for` (real-world names: programmes, companies, laws — news never uses the Vision's vocabulary), optional `keywords` as hints, and a distinct `sweep_query`. An item is relevant when it is a signal inside a theme.
 
-`source-catalog.yaml` groups sources under their class, which sets their default `tier` (a confidence ceiling) and `independence`:
+`source-catalog.yaml` groups sources under their class, which sets their default `independence` (stories resting on low-independence sources are discounted):
 
 ```yaml
 classes:
-  programmes: {tier: 2, independence: high}
+  programmes: {independence: high}
 sources:
   programmes:
     - {id: uk-aria, url: https://aria.org.uk/insights}
