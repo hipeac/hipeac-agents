@@ -106,7 +106,7 @@ class HarvestContext:
         :param item_summary: The candidate's summary.
         :param page_title: The actual title of the fetched page.
         :param themes: The watched themes.
-        :returns: The gate verdict: theme ids, tier, datapoint, title match.
+        :returns: The gate verdict: theme ids, significance, datapoint, title match.
         """
         questions = "\n".join(t.brief() for t in themes)
 

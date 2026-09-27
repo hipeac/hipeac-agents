@@ -21,7 +21,6 @@ from hipeac_agents.services.urls import normalize_url
 
 from .context import HarvestContext
 from .gates import (
-    cap_tier,
     duplicate_gate,
     extract_links,
     headline_in_body,
@@ -229,7 +228,6 @@ async def _verify_candidate(
             url=page.url or candidate.url,
             source_id=source_id,
             region=source.region if source else "global",
-            tier=cap_tier(verdict.tier, source.tier if source else 4),
             theme_ids=theme_ids,
             datapoint=verdict.datapoint or candidate.datapoint,
             summary=verdict.summary or candidate.summary or verdict.title_detail,

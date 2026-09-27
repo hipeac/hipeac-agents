@@ -10,11 +10,14 @@ from hipeac_agents.agents.vision_watch.schemas import Cluster, Finding
 
 
 # Candidate-trend threshold: at least 4 findings across at least 3 source
-# classes over at least 3 distinct weeks, including at least one tier-1 or
-# tier-2 finding.
+# classes over at least 3 distinct weeks, with at least one primary source —
+# a story told only by aggregators and commentators has not converged.
 CANDIDATE_TREND_MIN_FINDINGS = 4
 CANDIDATE_TREND_MIN_CLASSES = 3
 CANDIDATE_TREND_MIN_WEEKS = 3
+
+# Source classes that report and comment on others' news rather than make it.
+COMMENTARY_CLASSES = {"aggregators", "community"}
 
 
 def reach(entries: list[schemas.ClusterEntry]) -> int:
@@ -49,22 +52,22 @@ def entries_through(entries: list[schemas.ClusterEntry], week: str) -> list[sche
     return [entry for entry in entries if entry.week <= week]
 
 
-def evidence_strength(entries: list[schemas.ClusterEntry]) -> int:
-    """Return the best (lowest-number) tier present in a cluster.
+def has_primary_source(entries: list[schemas.ClusterEntry]) -> bool:
+    """Check a cluster has at least one entry from a source that makes the news.
 
     :param entries: The cluster's log entries.
-    :returns: The lowest tier, 1-4.
+    :returns: ``True`` when some entry comes from outside the commentary classes.
     """
-    return min(entry.tier for entry in entries)
+    return any(entry.source_class not in COMMENTARY_CLASSES for entry in entries)
 
 
 def strongest(entries: list[schemas.ClusterEntry]) -> schemas.ClusterEntry:
-    """Pick a cluster's strongest entry: best tier first, most recent breaks ties.
+    """Pick a cluster's strongest entry: most significant first, most recent breaks ties.
 
     :param entries: The cluster's log entries.
     :returns: The strongest entry.
     """
-    return min(entries, key=lambda entry: (entry.tier, -entry.date.toordinal()))
+    return min(entries, key=lambda entry: (-(entry.significance or 3), -entry.date.toordinal()))
 
 
 def momentum(entries: list[schemas.ClusterEntry], week: str) -> tuple[int, float]:
@@ -120,7 +123,7 @@ def is_candidate_trend(entries: list[schemas.ClusterEntry]) -> bool:
         len(entries) >= CANDIDATE_TREND_MIN_FINDINGS
         and reach(entries) >= CANDIDATE_TREND_MIN_CLASSES
         and persistence(entries) >= CANDIDATE_TREND_MIN_WEEKS
-        and evidence_strength(entries) <= 2
+        and has_primary_source(entries)
     )
 
 
@@ -128,7 +131,7 @@ def threshold_progress(entries: list[schemas.ClusterEntry]) -> str:
     """Render a cluster's progress toward the candidate-trend threshold.
 
     Makes the promotion ladder visible: the board sees exactly which of the
-    four criteria (4 findings, 3 source classes, 3 weeks, tier ≤ 2) a
+    four criteria (4 findings, 3 source classes, 3 weeks, a primary source) a
     cluster already meets and which it needs.
 
     :param entries: The cluster's log entries.
@@ -141,7 +144,7 @@ def threshold_progress(entries: list[schemas.ClusterEntry]) -> str:
         findings >= CANDIDATE_TREND_MIN_FINDINGS,
         classes >= CANDIDATE_TREND_MIN_CLASSES,
         weeks >= CANDIDATE_TREND_MIN_WEEKS,
-        evidence_strength(entries) <= 2,
+        has_primary_source(entries),
     )
     missing = []
 
@@ -158,7 +161,7 @@ def threshold_progress(entries: list[schemas.ClusterEntry]) -> str:
     )
 
     if not met[3]:
-        missing.append("a tier-1 or tier-2 finding")
+        missing.append("a primary source (not only aggregators or commentary)")
 
     needs = " — needs " + " and ".join(missing) if missing else " — threshold met"
     return progress + needs
@@ -168,7 +171,7 @@ def trend_status(entries: list[schemas.ClusterEntry]) -> str:
     """Derive a cluster's status label: strengthening, candidate-trend, or emerging.
 
     Below the threshold a cluster is *emerging*; once well past it (broad
-    reach, sustained six-plus weeks, a tier-1 anchor) it is *strengthening*.
+    reach, sustained six-plus weeks) it is *strengthening*.
     Labels are derived each run; nothing about them is stored.
 
     :param entries: The cluster's log entries.
@@ -177,7 +180,7 @@ def trend_status(entries: list[schemas.ClusterEntry]) -> str:
     if not is_candidate_trend(entries):
         return "emerging"
 
-    if persistence(entries) >= 6 and reach(entries) >= 4 and evidence_strength(entries) == 1:
+    if persistence(entries) >= 6 and reach(entries) >= 4:
         return "strengthening"
 
     return "candidate-trend"
@@ -204,7 +207,7 @@ def sort_ranked(
 ) -> list[tuple[Cluster, list[schemas.ClusterEntry]]]:
     """Rank clusters by importance, strongest first (derived, never stored).
 
-    Rule of thumb: tier first, then reach x persistence, discounted for low
+    Rule of thumb: primary sources first, then reach x persistence, discounted for low
     independence. A presentation aid, not a gate; the datapoint tie-breaker
     stays qualitative and is left to the digest prose.
 
@@ -216,7 +219,7 @@ def sort_ranked(
     def sort_key(pair: tuple[Cluster, list[schemas.ClusterEntry]]) -> tuple[int, int, float]:
         _, entries = pair
         return (
-            0 if evidence_strength(entries) <= 2 else 1,
+            0 if has_primary_source(entries) else 1,
             -(reach(entries) * persistence(entries)),
             independence_share(entries, catalog),
         )
@@ -235,7 +238,7 @@ def sort_lead_candidates(
     Vision wants what is emerging, not what is already big. So the lead is
     the cluster with the most forward-significant entry this week, then the
     most novelty (a new story, or one reaching new source classes and
-    regions), then best tier this week, burst size, candidate-trend status,
+    regions), then burst size, candidate-trend status,
     momentum against the cluster's prior rate, and an independence discount.
 
     :param candidates: ``(cluster, scoped_entries, this_week_entries)`` triples;
@@ -247,13 +250,12 @@ def sort_lead_candidates(
 
     def sort_key(
         item: tuple[Cluster, list[schemas.ClusterEntry], list[schemas.ClusterEntry]],
-    ) -> tuple[int, int, int, int, int, float, float]:
+    ) -> tuple[int, int, int, int, float, float]:
         _, scoped, this_week = item
         this_week_count, prior_rate = momentum(scoped, week)
         return (
             -max(entry.significance or 3 for entry in this_week),
             -novelty(scoped, week),
-            evidence_strength(this_week),
             -len(this_week),
             0 if is_candidate_trend(scoped) else 1,
             -this_week_count / max(prior_rate, 1),

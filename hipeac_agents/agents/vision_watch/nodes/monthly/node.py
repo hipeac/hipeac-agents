@@ -53,7 +53,7 @@ def compose_monthly_markdown(
     prose: dict[str, TrendProse],
     bottom_line: str,
 ) -> str:
-    """Assemble the monthly digest markdown, two tiers deep.
+    """Assemble the monthly digest markdown, two levels deep.
 
     Sections per compose-digest.md's monthly template: Bottom line; Candidate
     trends (threshold-crossing clusters, full anatomy + the news so far);
@@ -329,7 +329,8 @@ async def monthly_node(
         for cluster, _entries in ranked:
             data = active[cluster.id]
             month_news = "\n".join(
-                f"- {entry.week} [{entry.source_id}] {entry.note or entry.title} ({entry.url}, tier {entry.tier})"
+                f"- {entry.week} [{entry.source_id}] {entry.note or entry.title} "
+                f"({entry.url}, significance {entry.significance or '?'})"
                 for entry in data["month_entries"]
             )
             prose[cluster.id] = await _trend_prose(

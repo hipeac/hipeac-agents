@@ -9,7 +9,7 @@ import re
 from datetime import date
 
 from hipeac_agents.agents.vision_watch import schemas
-from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, RejectedItem, Tier
+from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, RejectedItem
 
 
 _DATE_IN_TEXT = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
@@ -76,19 +76,6 @@ def duplicate_gate(url: str, prior_findings: list[FindingsFile]) -> bool:
     """
     known = {normalize_url(finding.url) for file in prior_findings for finding in file.findings}
     return normalize_url(url) in known
-
-
-def cap_tier(item_tier: int, catalog_tier: int) -> Tier:
-    """Cap the item's tier by the source's catalog ceiling.
-
-    The tier follows the development's state, not the source — a catalog tier
-    is a ceiling, not a default.
-
-    :param item_tier: The tier the judgement call assigned (1-4).
-    :param catalog_tier: The source's catalog tier.
-    :returns: The capped tier.
-    """
-    return max(1, min(4, item_tier, catalog_tier))
 
 
 def normalize_url(url: str) -> str:

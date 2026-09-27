@@ -303,7 +303,7 @@ def _cap_source_volume(
             capped.extend(group)
             continue
 
-        group.sort(key=lambda f: (-f.significance, f.tier, -f.date.toordinal()))
+        group.sort(key=lambda f: (-f.significance, -f.date.toordinal()))
         keep = [f for f in group if f.significance >= _SOURCE_SIGNIFICANCE_FLOOR]
         if len(keep) < _SOURCE_KEEP_MIN:
             keep = group[:_SOURCE_KEEP_MIN]
@@ -335,7 +335,7 @@ def _merge_url_duplicates(findings: list[Finding]) -> list[Finding]:
     """Fold findings that share a URL — one development, one finding.
 
     The LLM near-match rule handles the same event under a different URL; an
-    identical URL needs no judgement call. The best (lowest-tier) finding is
+    identical URL needs no judgement call. The most significant finding is
     kept and the rest fold into its ``corroboration``, preserving order.
 
     :param findings: The verified findings.
@@ -353,7 +353,7 @@ def _merge_url_duplicates(findings: list[Finding]) -> list[Finding]:
             order.append(finding.url)
             continue
 
-        if (finding.tier, finding.datapoint) < (primary.tier, primary.datapoint):
+        if (finding.significance, bool(finding.datapoint)) > (primary.significance, bool(primary.datapoint)):
             folded.setdefault(finding.url, []).append(primary.summary)
             # The displaced primary's corroboration is evidence too: keep the
             # winner's own and inherit the primary's, rather than overwriting.
@@ -401,7 +401,7 @@ async def _fold_near_matches(ctx: HarvestContext, findings: list[Finding]) -> tu
         members = [by_id[fid] for fid in group if fid in by_id]
         if len(members) < 2:
             continue
-        members.sort(key=lambda f: f.tier)
+        members.sort(key=lambda f: -f.significance)
         primary = members[0]
         primary.corroboration = _join_corroboration(primary.corroboration, *(m.summary for m in members[1:]))
         drop.update(m.id for m in members[1:])

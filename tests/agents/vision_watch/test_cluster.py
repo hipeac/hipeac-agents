@@ -10,7 +10,7 @@ def entry(
     week: str = "2026-W24",
     finding_id: str = "f-1",
     source_class: str = "aggregators",
-    tier: int = 2,
+    significance: int | None = None,
     region: str = "global",
     source_id: str = "robot-report",
 ) -> ClusterEntry:
@@ -20,7 +20,7 @@ def entry(
             "finding_id": finding_id,
             "source_id": source_id,
             "source_class": source_class,
-            "tier": tier,
+            "significance": significance,
             "region": region,
             "date": "2026-06-09",
             "note": "n",
@@ -39,24 +39,16 @@ def catalog() -> SourceCatalog:
                     "name": "r",
                     "url": "u",
                     "class": "aggregators",
-                    "themes": [],
                     "region": "global",
-                    "tier": 2,
                     "independence": "high",
-                    "stream": "evidence",
-                    "cadence": "weekly",
                 },
                 {
                     "id": "eu-fund",
                     "name": "e",
                     "url": "u",
                     "class": "eu-uptake",
-                    "themes": [],
                     "region": "eu",
-                    "tier": 2,
                     "independence": "low",
-                    "stream": "evidence",
-                    "cadence": "weekly",
                 },
             ]
         }
@@ -75,8 +67,9 @@ class TestTallies:
     def test_persistence_counts_distinct_weeks(self):
         assert cluster.persistence([entry(week="2026-W23"), entry(week="2026-W24"), entry(week="2026-W24")]) == 2
 
-    def test_evidence_strength_is_best_tier(self):
-        assert cluster.evidence_strength([entry(tier=3), entry(tier=2)]) == 2
+    def test_primary_source_is_anything_but_commentary(self):
+        assert cluster.has_primary_source([entry(source_class="aggregators"), entry(source_class="programmes")])
+        assert not cluster.has_primary_source([entry(source_class="aggregators"), entry(source_class="community")])
 
     def test_momentum_this_week_vs_prior_rate(self):
         entries = [entry(week="2026-W23"), entry(week="2026-W23"), entry(week="2026-W24")]
@@ -112,11 +105,11 @@ class TestCandidateTrendThreshold:
     @pytest.mark.parametrize(
         ("entries", "expected"),
         [
-            # 4 findings / 3 classes / 3 weeks / tier-2 anchor: crosses.
+            # 4 findings / 3 classes / 3 weeks / a primary source: crosses.
             (
                 [
                     entry("2026-W22", "f-1", "aggregators"),
-                    entry("2026-W23", "f-2", "capital", tier=2),
+                    entry("2026-W23", "f-2", "capital"),
                     entry("2026-W24", "f-3", "programmes"),
                     entry("2026-W24", "f-4", "aggregators"),
                 ],
@@ -132,15 +125,25 @@ class TestCandidateTrendThreshold:
                 ],
                 False,
             ),
-            # Only tier 3/4: below, whatever the tallies.
+            # Only commentary (aggregators, community): below, whatever the tallies.
             (
                 [
-                    entry("2026-W22", "f-1", "aggregators", tier=3),
-                    entry("2026-W23", "f-2", "capital", tier=3),
-                    entry("2026-W24", "f-3", "programmes", tier=4),
-                    entry("2026-W24", "f-4", "aggregators", tier=3),
+                    entry("2026-W22", "f-1", "aggregators"),
+                    entry("2026-W23", "f-2", "community"),
+                    entry("2026-W24", "f-3", "aggregators", region="eu"),
+                    entry("2026-W24", "f-4", "community"),
                 ],
                 False,
+            ),
+            # Three classes, but two of them commentary and one primary: crosses.
+            (
+                [
+                    entry("2026-W22", "f-1", "aggregators"),
+                    entry("2026-W23", "f-2", "community"),
+                    entry("2026-W24", "f-3", "preprints"),
+                    entry("2026-W24", "f-4", "aggregators"),
+                ],
+                True,
             ),
             # Only 2 weeks: below.
             (
@@ -165,7 +168,7 @@ class TestTrendStatus:
     def test_at_threshold_is_candidate_trend(self):
         entries = [
             entry("2026-W22", "f-1", "aggregators"),
-            entry("2026-W23", "f-2", "capital", tier=2),
+            entry("2026-W23", "f-2", "capital"),
             entry("2026-W24", "f-3", "programmes"),
             entry("2026-W24", "f-4", "aggregators"),
         ]
@@ -173,7 +176,7 @@ class TestTrendStatus:
 
     def test_well_past_threshold_is_strengthening(self):
         entries = [
-            entry("2026-W17", "f-1", "aggregators", tier=1),
+            entry("2026-W17", "f-1", "aggregators"),
             entry("2026-W18", "f-2", "capital"),
             entry("2026-W19", "f-3", "programmes"),
             entry("2026-W20", "f-4", "aggregators"),
@@ -200,15 +203,19 @@ class TestEntriesThrough:
 
 
 class TestStrongest:
-    def test_picks_best_tier(self):
-        best = entry(finding_id="f-1", tier=3)
-        strongest_entry = ClusterEntry.model_validate({**best.model_dump(), "finding_id": "f-2", "tier": 1})
+    def test_picks_most_significant(self):
+        routine = entry(finding_id="f-1", significance=2)
+        consequential = entry(finding_id="f-2", significance=4)
 
-        assert cluster.strongest([best, strongest_entry]).finding_id == "f-2"
+        assert cluster.strongest([routine, consequential]).finding_id == "f-2"
 
     def test_ties_broken_by_most_recent(self):
-        older = ClusterEntry.model_validate({**entry(finding_id="f-1", tier=1).model_dump(), "date": "2026-06-01"})
-        newer = ClusterEntry.model_validate({**entry(finding_id="f-2", tier=1).model_dump(), "date": "2026-06-09"})
+        older = ClusterEntry.model_validate(
+            {**entry(finding_id="f-1", significance=4).model_dump(), "date": "2026-06-01"}
+        )
+        newer = ClusterEntry.model_validate(
+            {**entry(finding_id="f-2", significance=4).model_dump(), "date": "2026-06-09"}
+        )
 
         assert cluster.strongest([older, newer]).finding_id == "f-2"
 
@@ -219,16 +226,16 @@ class TestSortLeadCandidates:
             {"id": cid, "name": cid.title(), "opened": "2026-W01", "entries": [e.model_dump() for e in entries]}
         )
 
-    def test_this_weeks_tier_beats_lifetime_volume(self, catalog):
-        # 30 lifetime tier-3 entries, only a weak tier-3 mention this week.
-        heavy_this_week = [entry(week="2026-W24", finding_id="h-24", source_class="aggregators", tier=3)]
+    def test_this_weeks_significance_beats_lifetime_volume(self, catalog):
+        # 30 lifetime entries, only a routine mention this week.
+        heavy_this_week = [entry(week="2026-W24", finding_id="h-24", significance=2)]
         heavy_entries = [
-            entry(week="2026-W20", finding_id=f"h-{i}", source_class="aggregators", tier=3) for i in range(29)
+            entry(week="2026-W20", finding_id=f"h-{i}", significance=3) for i in range(29)
         ] + heavy_this_week
-        # 2 tier-1 entries, both this week.
+        # A new story, significant, this week.
         fresh_entries = [
-            entry(week="2026-W24", finding_id="f-1", source_class="aggregators", tier=1),
-            entry(week="2026-W24", finding_id="f-2", source_class="capital", tier=1),
+            entry(week="2026-W24", finding_id="f-1", significance=4),
+            entry(week="2026-W24", finding_id="f-2", source_class="capital", significance=4),
         ]
         candidates = [
             (self._cluster("heavy", heavy_entries), heavy_entries, heavy_this_week),
@@ -239,11 +246,11 @@ class TestSortLeadCandidates:
 
         assert ranked[0][0].id == "fresh"
 
-    def test_burst_beats_single_item_at_same_tier(self, catalog):
-        single = [entry(week="2026-W24", finding_id="s-1", tier=1)]
+    def test_burst_beats_single_item_at_same_significance(self, catalog):
+        single = [entry(week="2026-W24", finding_id="s-1", significance=4)]
         burst = [
-            entry(week="2026-W24", finding_id="b-1", tier=1),
-            entry(week="2026-W24", finding_id="b-2", source_class="capital", tier=1),
+            entry(week="2026-W24", finding_id="b-1", significance=4),
+            entry(week="2026-W24", finding_id="b-2", significance=4),
         ]
         candidates = [
             (self._cluster("single", single), single, single),
@@ -263,9 +270,9 @@ class TestLeadEmergence:
             {"id": cid, "name": cid, "opened": "2026-W01", "entries": [e.model_dump() for e in entries]}
         )
 
-    def test_forward_significance_beats_tier(self, catalog):
-        solid = [entry(finding_id="s-1", tier=1).model_copy(update={"significance": 3})]
-        consequential = [entry(finding_id="c-1", tier=3).model_copy(update={"significance": 5})]
+    def test_forward_significance_beats_burst_size(self, catalog):
+        solid = [entry(finding_id=f"s-{i}", significance=3) for i in range(3)]
+        consequential = [entry(finding_id="c-1", significance=5)]
         candidates = [
             (self._cluster("solid", solid), solid, solid),
             (self._cluster("consequential", consequential), consequential, consequential),
@@ -295,21 +302,23 @@ class TestRanking:
             {"id": cid, "name": cid.title(), "opened": "2026-W01", "entries": [e.model_dump() for e in entries]}
         ), entries
 
-    def test_tier_first_then_reach_times_persistence(self, catalog):
-        a_entries = [
-            entry(week=f"2026-W2{i}", finding_id=f"a-{i}", source_class="aggregators", tier=1) for i in range(4)
-        ]
-        b_entries = [entry(week="2026-W24", finding_id=f"b-{i}", source_class="aggregators", tier=3) for i in range(4)]
-        ranked = cluster.sort_ranked([self._cluster("b", b_entries), self._cluster("a", a_entries)], catalog)
+    def test_primary_sources_first_then_reach_times_persistence(self, catalog):
+        commentary = [entry(week=f"2026-W2{i}", finding_id=f"c-{i}", source_class="aggregators") for i in range(4)]
+        primary = [entry(week="2026-W24", finding_id=f"p-{i}", source_class="programmes") for i in range(4)]
+        wider = [entry(week=f"2026-W2{i}", finding_id=f"w-{i}", source_class="programmes") for i in range(4)]
+        ranked = cluster.sort_ranked(
+            [self._cluster("commentary", commentary), self._cluster("primary", primary), self._cluster("wider", wider)],
+            catalog,
+        )
 
-        assert [c.id for c, _ in ranked] == ["a", "b"]
+        assert [c.id for c, _ in ranked] == ["wider", "primary", "commentary"]
 
     def test_low_independence_discounted(self, catalog):
         eu_entries = [
             entry(week=f"2026-W2{i}", finding_id=f"e-{i}", source_class="eu-uptake", source_id="eu-fund")
             for i in range(4)
         ]
-        world_entries = [entry(week=f"2026-W2{i}", finding_id=f"w-{i}", source_class="aggregators") for i in range(4)]
+        world_entries = [entry(week=f"2026-W2{i}", finding_id=f"w-{i}", source_class="programmes") for i in range(4)]
         ranked = cluster.sort_ranked([self._cluster("eu", eu_entries), self._cluster("w", world_entries)], catalog)
 
         assert [c.id for c, _ in ranked] == ["w", "eu"]
@@ -326,7 +335,6 @@ class TestGrouping:
                 "url": "u",
                 "source_id": "s",
                 "region": "global",
-                "tier": 2,
                 "theme_ids": theme_ids,
                 "summary": "s",
             }

@@ -27,16 +27,16 @@ themes:
 
 SOURCE_CATALOG_YAML = """\
 classes:
-    aggregators: {tier: 4, independence: low}
-    capital: {tier: 4, independence: high}
-    eu-uptake: {tier: 2, independence: low}
-    programmes: {tier: 2, independence: high}
-    foresight: {tier: 3, independence: med}
+    aggregators: {independence: low}
+    capital: {independence: high}
+    eu-uptake: {independence: low}
+    programmes: {independence: high}
+    foresight: {independence: med}
 
 sources:
     aggregators:
         - {id: robot-report, name: Robot Report, url: "https://example.com/robot-report",
-           feed_url: "https://example.com/robot-report/feed", tier: 2, independence: high}
+           feed_url: "https://example.com/robot-report/feed", independence: high}
     capital:
         - {id: fabricated-knowledge, name: Fabricated Knowledge, url: "https://example.com/fk",
            senders: [fk@substack.com]}

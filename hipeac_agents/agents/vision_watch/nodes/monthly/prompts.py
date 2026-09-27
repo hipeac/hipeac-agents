@@ -11,7 +11,8 @@ tagged GAP, OPPORTUNITY, or DEPENDENCY; and a recommendation.
 
 Recommendation bar: "adopt into the Vision's thinking" is reserved for
 clusters that have crossed the candidate-trend threshold (4+ findings, 3+
-source classes, 3+ weeks, with tier-1 or tier-2 evidence). Everything below
+source classes, 3+ weeks, at least one primary source — not only aggregators
+or commentary). Everything below
 the threshold gets "keep watching" unless the evidence actively argues for
 dropping it ("let go"). Do not inflate: a two-finding cluster is not a Vision
 candidate yet, however interesting.

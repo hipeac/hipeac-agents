@@ -26,14 +26,13 @@ class CandidateList(BaseModel):
 
 
 class GateVerdict(BaseModel):
-    """One candidate's verification verdict: themes, tier, and title match.
+    """One candidate's verification verdict: themes, significance, and title match.
 
     Merged from what were three separate calls — one call per candidate keeps
     the weekly run affordable.
     """
 
     theme_ids: list[str] = Field(description="Ids of the themes the candidate is a signal for; empty if none")
-    tier: int = Field(description="Evidence tier per the development's state: 1-4")
     datapoint: str = Field(default="", description="Single most notable figure, e.g. '$900M'; empty if none")
     summary: str = Field(
         default="",

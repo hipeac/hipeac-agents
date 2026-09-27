@@ -232,7 +232,7 @@ def compose_digest_markdown(
 
         ranked = sorted(
             by_finding.values(),
-            key=lambda found: (found["entry"].tier, -found["entry"].date.toordinal()),
+            key=lambda found: (-(found["entry"].significance or 3), -found["entry"].date.toordinal()),
         )
 
         for found in ranked[:_MAX_THEME_ENTRIES]:

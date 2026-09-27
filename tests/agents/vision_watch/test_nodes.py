@@ -836,21 +836,21 @@ class TestDigestNode:
         assert not llm.calls, "sending a recorded digest must cost no LLM calls"
         assert workspace.weekly_digest_sent("2026-W24")
 
-    async def test_lead_prefers_this_weeks_tier_over_lifetime_volume(self, llm):
+    async def test_lead_prefers_this_weeks_significance_over_lifetime_volume(self, llm):
         """Regression: the lead used to be picked by lifetime entry count, so a
-        cluster with 30 old tier-3 entries always beat a fresh tier-1 burst."""
+        cluster with 30 old routine entries always beat a fresh, significant burst."""
         from datetime import date as date_cls
 
         from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
 
-        def make_entry(week: str, finding_id: str, tier: int, url: str) -> ClusterEntry:
+        def make_entry(week: str, finding_id: str, significance: int, url: str) -> ClusterEntry:
             return ClusterEntry.model_validate(
                 {
                     "week": week,
                     "finding_id": finding_id,
                     "source_id": "darpa-news",
                     "source_class": "programmes",
-                    "tier": tier,
+                    "significance": significance,
                     "region": "global",
                     "date": "2026-06-09",
                     "note": "n",
@@ -867,8 +867,8 @@ class TestDigestNode:
             created=date_cls(2026, 1, 8),
         )
         fresh_entries = [
-            make_entry("2026-W24", "f-1", 1, "https://example.com/fresh-1"),
-            make_entry("2026-W24", "f-2", 1, "https://example.com/fresh-2"),
+            make_entry("2026-W24", "f-1", 5, "https://example.com/fresh-1"),
+            make_entry("2026-W24", "f-2", 5, "https://example.com/fresh-2"),
         ]
         workspace.append_cluster(
             Cluster(id="fresh-news", name="Fresh News", opened="2026-W24", entries=fresh_entries),
@@ -945,14 +945,14 @@ class TestDigestNode:
 
         from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterEntry
 
-        def make_entry(finding_id: str, tier: int, url: str) -> ClusterEntry:
+        def make_entry(finding_id: str, significance: int, url: str) -> ClusterEntry:
             return ClusterEntry.model_validate(
                 {
                     "week": "2026-W24",
                     "finding_id": finding_id,
                     "source_id": "darpa-news",
                     "source_class": "programmes",
-                    "tier": tier,
+                    "significance": significance,
                     "region": "global",
                     "date": "2026-06-09",
                     "note": "n",
@@ -962,12 +962,12 @@ class TestDigestNode:
 
         workspace.append_cluster(
             Cluster(
-                id="mixed-tier",
-                name="Mixed Tier",
+                id="mixed-significance",
+                name="Mixed Significance",
                 opened="2026-W24",
                 entries=[
-                    make_entry("m-1", 3, "https://example.com/weak-first"),
-                    make_entry("m-2", 1, "https://example.com/strong-second"),
+                    make_entry("m-1", 2, "https://example.com/weak-first"),
+                    make_entry("m-2", 5, "https://example.com/strong-second"),
                 ],
             ),
             theme="agentic-ai",
@@ -1137,7 +1137,7 @@ class TestDigestNode:
                     "finding_id": f"f-{n:02d}",
                     "source_id": "darpa-news",
                     "source_class": "programmes",
-                    "tier": (n % 4) + 1,
+                    "significance": 5 - (n % 4),
                     "region": "global",
                     "date": f"2026-06-{9 - (n % 9):02d}",
                     "note": f"Entry {n}",
@@ -1166,8 +1166,8 @@ class TestDigestNode:
         overflow = [line for line in across.splitlines() if "more entries this week" in line]
         assert len(item_lines) == 12
         assert overflow == ["- (+2 more entries this week — see the theme's cluster log.)"]
-        # Strongest tier first, newest first within the tier: entry 0 is the
-        # only tier-1 entry dated 2026-06-09.
+        # Most significant first, newest first within a level: entry 0 is the
+        # only significance-5 entry dated 2026-06-09.
         assert item_lines[0] == "- _Entry 0_ — [example.com](https://example.com/0) — in cluster-a"
 
     async def test_board_tips_render_in_own_section_even_unclustered(self, llm):
@@ -1364,11 +1364,11 @@ class TestMessageAttribution:
 
 
 class TestUrlDedupe:
-    def test_same_url_folds_into_best_tier(self):
+    def test_same_url_folds_into_most_significant(self):
         from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node_mod
         from hipeac_agents.agents.vision_watch.schemas import Finding
 
-        def finding(fid: str, tier: int, summary: str) -> Finding:
+        def finding(fid: str, significance: int, summary: str) -> Finding:
             return Finding.model_validate(
                 {
                     "id": fid,
@@ -1377,7 +1377,7 @@ class TestUrlDedupe:
                     "url": "https://example.com/story",
                     "source_id": "s",
                     "region": "global",
-                    "tier": tier,
+                    "significance": significance,
                     "theme_ids": ["physical-ai"],
                     "summary": summary,
                 }
@@ -1385,8 +1385,8 @@ class TestUrlDedupe:
 
         findings = [
             finding("a", 3, "aggregator version"),
-            finding("b", 2, "first-party version"),
-            finding("c", 2, "another newsletter version"),
+            finding("b", 4, "first-party version"),
+            finding("c", 4, "another newsletter version"),
         ]
 
         merged = harvest_node_mod._merge_url_duplicates(findings)
@@ -1426,7 +1426,7 @@ class TestUrlDedupe:
         from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node_mod
         from hipeac_agents.agents.vision_watch.schemas import Finding
 
-        def finding(fid: str, tier: int, summary: str, corroboration: str) -> Finding:
+        def finding(fid: str, significance: int, summary: str, corroboration: str) -> Finding:
             return Finding.model_validate(
                 {
                     "id": fid,
@@ -1435,7 +1435,7 @@ class TestUrlDedupe:
                     "url": "https://example.com/story",
                     "source_id": "s",
                     "region": "global",
-                    "tier": tier,
+                    "significance": significance,
                     "theme_ids": ["physical-ai"],
                     "summary": summary,
                     "corroboration": corroboration,
@@ -1444,7 +1444,7 @@ class TestUrlDedupe:
 
         findings = [
             finding("a", 3, "aggregator version", "seen at aggregator"),
-            finding("b", 2, "first-party version", "confirmed by vendor"),
+            finding("b", 4, "first-party version", "confirmed by vendor"),
         ]
 
         merged = harvest_node_mod._merge_url_duplicates(findings)

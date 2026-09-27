@@ -7,7 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 Region = Literal["eu", "global"]
-Tier = Literal[1, 2, 3, 4]
 RejectionReason = Literal[
     "out_of_window",
     "off_theme",
@@ -53,7 +52,6 @@ class Finding(BaseModel):
     url: str
     source_id: str
     region: Region
-    tier: Tier
     theme_ids: list[str] = []
     datapoint: str = ""
     summary: str
@@ -129,7 +127,6 @@ class ClusterEntry(BaseModel):
     finding_id: str
     source_id: str
     source_class: SourceClass
-    tier: Tier
     region: Region
     date: date
     title: str = ""
@@ -194,7 +191,6 @@ class ThemeDef(BaseModel):
 class ClassDefaults(BaseModel):
     """Per-class defaults in the catalog: a source inherits them unless it overrides."""
 
-    tier: Tier
     independence: Independence
 
 
@@ -217,7 +213,6 @@ class SourceEntry(BaseModel):
     arxiv: str | None = None
     source_class: SourceClass = Field(alias="class")
     region: Region = "global"
-    tier: Tier
     independence: Independence
     senders: list[str] = []
     web: bool = True
@@ -238,7 +233,7 @@ class SourceCatalog(BaseModel):
     """The parsed ``source-catalog.yaml`` document.
 
     On disk, sources are grouped under their class and inherit that class's
-    ``classes`` defaults (tier, independence); in memory they are one flat list.
+    ``classes`` defaults (independence); in memory they are one flat list.
     """
 
     classes: dict[SourceClass, ClassDefaults] = {}

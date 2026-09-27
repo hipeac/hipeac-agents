@@ -58,13 +58,8 @@ land (now, 1-2y, 3-5y)?
 3. FORWARD NOTE: one line (max 160 characters) on what this could change for
 computing in Europe, and when. Concrete, no hype.
 
-4. TIER: how solid the evidence is, per the development's state, not the
-source: 1 peer-reviewed results or reproducible benchmarks; 2 committed
-reality — capital allocated, programmes adopted, law passed, hardware
-deployed; 3 stated intention — announcements, proposals, draft legislation,
-specifications; 4 trade press, commentary, aggregator analysis. Tier is
-confidence only: an early proposal can matter more than a finished fact.
-Also extract the single most notable figure (e.g. "$900M"), if any.
+4. DATAPOINT: the single most notable figure in the item (e.g. "$900M",
+"1,200 jobs"), if any.
 
 5. TITLE: does the actual page title refer to the same development as the
 claimed headline? Wording may differ; subject may not. Set

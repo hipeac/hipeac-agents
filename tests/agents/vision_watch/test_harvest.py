@@ -108,15 +108,6 @@ class TestDuplicateGate:
         assert harvest.duplicate_gate("https://example.com/new", prior) is False
 
 
-class TestCapTier:
-    @pytest.mark.parametrize(
-        ("item_tier", "catalog_tier", "expected"),
-        [(1, 2, 1), (3, 2, 2), (4, 4, 4), (0, 2, 1), (9, 2, 2)],
-    )
-    def test_ceiling(self, item_tier, catalog_tier, expected):
-        assert harvest.cap_tier(item_tier, catalog_tier) == expected
-
-
 class TestParseIsoDate:
     @pytest.mark.parametrize(
         ("text", "expected"),

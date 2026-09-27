@@ -74,7 +74,6 @@ def _entry_from_finding(week: str, finding: Finding, catalog: schemas.SourceCata
         finding_id=finding.id,
         source_id=finding.source_id,
         source_class=classes.get(finding.source_id, "community"),
-        tier=finding.tier,
         region=finding.region,
         date=finding.date,
         title=finding.title,

@@ -32,25 +32,25 @@ class TestFinding:
         )
 
         assert finding.date == date(2026, 6, 9)
-        assert finding.tier == 2
         # Significance defaults to the gate scale's mid-point when unrecorded.
         assert finding.significance == 3
 
-    @pytest.mark.parametrize("tier", [0, 5, "high"])
-    def test_rejects_tier_outside_scale(self, tier):
-        with pytest.raises(ValidationError):
-            Finding.model_validate(
-                {
-                    "id": "f-2026-W24-01",
-                    "date": "2026-06-09",
-                    "title": "Some development",
-                    "url": "https://example.com/a",
-                    "source_id": "darpa-news",
-                    "region": "global",
-                    "tier": tier,
-                    "summary": "What happened.",
-                }
-            )
+    def test_old_files_with_a_tier_still_read(self):
+        """Tier was dropped; evidence written before still parses."""
+        finding = Finding.model_validate(
+            {
+                "id": "f-2026-W24-01",
+                "date": "2026-06-09",
+                "title": "Some development",
+                "url": "https://example.com/a",
+                "source_id": "darpa-news",
+                "region": "global",
+                "tier": 2,
+                "summary": "What happened.",
+            }
+        )
+
+        assert not hasattr(finding, "tier")
 
     def test_rejects_unknown_region(self):
         with pytest.raises(ValidationError):
@@ -175,11 +175,11 @@ class TestSourceCatalog:
         by_id = {s.id: s for s in catalog.sources}
 
         assert by_id["darpa-news"].source_class == "programmes"
-        assert (by_id["darpa-news"].tier, by_id["darpa-news"].independence) == (2, "high")
-        assert (by_id["robot-report"].tier, by_id["robot-report"].independence) == (2, "high"), "overrides win"
-        assert (by_id["eu-fund"].tier, by_id["eu-fund"].region) == (2, "eu")
+        assert by_id["darpa-news"].independence == "high"
+        assert by_id["robot-report"].independence == "high", "overrides win"
+        assert (by_id["eu-fund"].independence, by_id["eu-fund"].region) == ("low", "eu")
         assert by_id["fabricated-knowledge"].newsletter is True
 
-    def test_source_without_class_defaults_needs_its_own_tier(self):
+    def test_source_without_class_defaults_needs_its_own_independence(self):
         with pytest.raises(ValueError):
             SourceCatalog.model_validate({"sources": {"companies": [{"id": "x", "url": "https://x"}]}})
