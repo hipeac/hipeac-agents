@@ -1716,3 +1716,26 @@ class TestFeedChannel:
         assert "https://example.com/site" in crawl.scrape_calls
         assert "https://example.com/feed.xml" not in crawl.scrape_calls
         assert len(updates["findings"]) == 1
+
+
+class TestOnlyFilter:
+    async def test_only_limits_the_mailbox_channels_too(self, data_dir, monkeypatch):
+        """Regression: with ``--only``, every newsletter of a source left out
+        fell into the unattributed-inbox bucket and was judged there."""
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.DATA_DIR", data_dir)
+        monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
+        message = MailMessage(inbox_id="vision-news", message_id="m1", from_="fk@substack.com", subject="Weekly")
+        mail = FakeMail(messages=[message], bodies={"m1": "Humanoid deployed https://example.com/x"})
+        llm = FakeLLM()
+        state = VisionWatchState(
+            week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12), source_only=["darpa-news"]
+        )
+
+        updates = await harvest_node_mod.harvest_node(state, services=_services(FakeCrawl(), mail), llm=llm)
+
+        outcomes = {o.source_id: o for o in updates["source_outcomes"]}
+        assert outcomes["inbox"].status == "empty"
+        assert outcomes["sweep"].status == "skipped"
+        assert not any(schema.__name__ == "CandidateList" for schema, _ in llm.calls), "no newsletter was read"

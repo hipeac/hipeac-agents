@@ -146,9 +146,17 @@ async def harvest_node(
             after=_window_start_dt(window_start),
             before=_window_end_dt(window_end),
         )
+    # Attribute against every newsletter source, not just the due ones: with
+    # ``--only``, messages of the sources left out must not fall into the
+    # unattributed bucket and be judged there.
+    all_newsletters = [s for s in catalog.sources if s.newsletter]
     attributed, tips_messages, unattributed = attribute_messages(
-        inbox_messages, newsletter_sources, watch_settings.HIPEAC_VISION_TIPS_MAILBOX
+        inbox_messages, all_newsletters, watch_settings.HIPEAC_VISION_TIPS_MAILBOX
     )
+    if state.source_only:
+        wanted = set(state.source_only)
+        unattributed = unattributed if "inbox" in wanted else []
+        tips_messages = tips_messages if "board-tip" in wanted else []
     newsletter_results = await asyncio.gather(
         *(
             _bounded(
@@ -167,7 +175,7 @@ async def harvest_node(
     tips = await harvest_board_tips(ctx, services, tips_messages, window_start, window_end, prior, themes)
 
     # The general sweep.
-    if state.skip_sweep:
+    if state.skip_sweep or (state.source_only and "sweep" not in state.source_only):
         sweep = ([], [], SourceOutcome(source_id="sweep", status="skipped", detail="--skip-sweep"))
     else:
         sweep = await harvest_sweep(ctx, services, themes, window_start, window_end, prior)
