@@ -4,6 +4,7 @@ from datetime import date
 from typing import Any
 
 from hipeac_agents.agents.vision_watch import schemas, workspace
+from hipeac_agents.agents.vision_watch.cadence import weeks_before
 from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterLog, Finding, SourceClass
 from hipeac_agents.agents.vision_watch.state import ClusterReport, VisionWatchState
 from hipeac_agents.agents.vision_watch.workspace import ClusterExistsError, EntryAlreadyRecordedError
@@ -14,11 +15,36 @@ from .prompts import GROUPING_BAR
 from .tallies import is_candidate_trend, sort_ranked, trend_status
 
 
+# Clusters seen within this many weeks are shown to the grouping call with
+# their recent notes; older ones by id and name only, so the prompt stops
+# growing with history while old stories can still be extended.
+RECENT_WEEKS = 8
+
+
+def cluster_index_text(cluster_index: dict[str, tuple[str, schemas.Cluster]], week: str) -> str:
+    """Render the existing clusters for the grouping call, compact for old ones.
+
+    :param cluster_index: Cluster id to ``(theme, cluster)`` across all themes.
+    :param week: The week being grouped.
+    :returns: One line per cluster.
+    """
+    cutoff = weeks_before(week, RECENT_WEEKS)
+    lines = []
+    for cid, (theme, cluster) in sorted(cluster_index.items()):
+        last = max((entry.week for entry in cluster.entries), default="")
+        line = f"- {cid} [theme: {theme}] {cluster.name!r} ({len(cluster.entries)} entries, last {last or 'never'})"
+        if last >= cutoff and cluster.entries:
+            line += " | recent: " + " | ".join(entry.note for entry in cluster.entries[-3:])
+        lines.append(line)
+    return "\n".join(lines) or "(no clusters yet)"
+
+
 async def _group_findings(
     llm: Any,
     themes: list[schemas.ThemeDef],
     cluster_index: dict[str, tuple[str, schemas.Cluster]],
     findings: list[Finding],
+    week: str,
 ) -> GroupingPlan:
     """Ask the grouping-bar judgement call — one global call for the week.
 
@@ -31,17 +57,11 @@ async def _group_findings(
     :param themes: The themes.
     :param cluster_index: Cluster id to ``(theme, cluster)`` across all themes.
     :param findings: The week's findings.
+    :param week: The week being grouped.
     :returns: The grouping plan.
     """
-    theme_text = "\n".join(t.brief() for t in themes)
-    existing = (
-        "\n".join(
-            f"- {cid} [theme: {theme}] ({len(cluster.entries)} entries, opened {cluster.opened})"
-            + (" | recent: " + " | ".join(entry.note for entry in cluster.entries[-3:]) if cluster.entries else "")
-            for cid, (theme, cluster) in sorted(cluster_index.items())
-        )
-        or "(no clusters yet)"
-    )
+    theme_text = "\n".join(t.outline() for t in themes)
+    existing = cluster_index_text(cluster_index, week)
     findings_text = "\n".join(
         f"- {f.id} [themes: {', '.join(f.theme_ids) or 'none'}]: {f.title} — {f.summary}" for f in findings
     )
@@ -128,7 +148,7 @@ async def cluster_node(
     # Record-once: reuse the week's grouping decision on rerun.
     plan = workspace.read_grouping_plan(week)
     if plan is None:
-        plan = await _group_findings(llm, themes, cluster_index, findings)
+        plan = await _group_findings(llm, themes, cluster_index, findings, week)
         workspace.write_grouping_plan(week, plan.model_dump_json(indent=2))
 
     placed_ids: set[str] = set()

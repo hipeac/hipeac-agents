@@ -28,3 +28,11 @@ def test_friday_closes_its_own_window():
 
 def test_thursday_targets_the_previous_week():
     assert cadence.last_closed_window(date(2026, 10, 1)) == (date(2026, 9, 19), FRIDAY)
+
+
+@pytest.mark.parametrize(
+    ("week", "back", "expected"),
+    [("2026-W39", 8, "2026-W31"), ("2026-W02", 3, "2025-W51"), ("2026-W39", 0, "2026-W39")],
+)
+def test_weeks_before(week, back, expected):
+    assert cadence.weeks_before(week, back) == expected

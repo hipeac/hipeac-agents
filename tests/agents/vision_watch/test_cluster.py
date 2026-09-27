@@ -353,3 +353,26 @@ class TestGrouping:
             "physical-ai": ["f-1", "f-2"],
             "new-hardware": ["f-2"],
         }
+
+
+class TestClusterIndexText:
+    def test_recent_clusters_keep_notes_old_ones_only_their_name(self):
+        from hipeac_agents.agents.vision_watch.nodes.cluster.node import cluster_index_text
+
+        recent = Cluster.model_validate(
+            {
+                "id": "recent",
+                "name": "Recent story",
+                "opened": "2026-W30",
+                "entries": [entry(week="2026-W35").model_dump()],
+            }
+        )
+        old = Cluster.model_validate(
+            {"id": "old", "name": "Old story", "opened": "2026-W10", "entries": [entry(week="2026-W20").model_dump()]}
+        )
+
+        text = cluster_index_text({"recent": ("physical-ai", recent), "old": ("agentic-ai", old)}, "2026-W39")
+
+        lines = dict(line.split(" ", 2)[1:] for line in text.splitlines())
+        assert "Old story" in lines["old"] and "recent:" not in lines["old"]
+        assert "Recent story" in lines["recent"] and "| recent: n" in lines["recent"]
