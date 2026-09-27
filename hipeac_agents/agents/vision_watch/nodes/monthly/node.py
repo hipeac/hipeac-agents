@@ -26,6 +26,10 @@ from .prompts import MONTHLY_BOTTOM_LINE, MONTHLY_TREND
 
 logger = logging.getLogger(__name__)
 
+# Converged stories that get a full synthesis each month; each is one call on
+# the thinking model.
+MAX_SYNTHESES = 10
+
 
 def month_weeks(month: str) -> set[str]:
     """Week labels whose closing Friday falls in a calendar month.
@@ -81,11 +85,9 @@ def compose_monthly_markdown(
         [(data["cluster"], data["entries"]) for data in cluster_data.values()],
         _catalog(),
     )
-    candidates = [cluster.id for cluster, _ in ranked if _crossed(cluster_data[cluster.id])]
+    candidates = [cluster.id for cluster, _ in ranked if cluster.id in prose]
     progressing = [
-        cluster.id
-        for cluster, _ in ranked
-        if not _crossed(cluster_data[cluster.id]) and len(cluster_data[cluster.id]["month_entries"]) >= 1
+        cluster.id for cluster, _ in ranked if cluster.id not in prose and cluster_data[cluster.id]["month_entries"]
     ]
 
     lines.extend(["## Candidate trends", ""])
@@ -101,20 +103,18 @@ def compose_monthly_markdown(
         [
             "## Also accumulating",
             "",
-            "(Clusters below the candidate-trend threshold that received entries this month.",
-            "One line each; full anatomy comes when they cross.)",
+            "(Other clusters that received entries this month, one line each;",
+            "a full synthesis comes when they converge.)",
             "",
         ]
     )
 
     if progressing:
         for cid in progressing:
-            item = prose.get(cid)
-            europe = _europe_tag(item.europe) if item else ""
-            recommendation = _recommendation(item.recommendation) if item else "keep watching"
+            data = cluster_data[cid]
             lines.append(
-                f"- **{cid}** ({cluster_data[cid]['theme']}) — {tally_text(cluster_data[cid]['entries'])} · "
-                f"Europe: {europe} · {recommendation}"
+                f"- **{data['cluster'].name}** ({data['theme']}) — {len(data['month_entries'])} new this month; "
+                f"{tally_text(data['entries'])}"
             )
     else:
         lines.append("(No clusters accumulated entries this month.)")
@@ -185,32 +185,6 @@ def _dormant(data: dict[str, Any], weeks: set[str]) -> bool:
 def _catalog():
     """Read the source catalog, for the ranking's independence discount."""
     return workspace.read_source_catalog()
-
-
-def _europe_tag(europe: str) -> str:
-    """Extract the GAP/OPPORTUNITY/DEPENDENCY tag from a Europe sentence.
-
-    :param europe: The Europe sentence from the synthesis.
-    :returns: The tag, or ``"—"`` when none is present.
-    """
-    for tag in ("GAP", "OPPORTUNITY", "DEPENDENCY"):
-        if tag in europe.upper():
-            return tag
-    return "—"
-
-
-def _recommendation(recommendation: str) -> str:
-    """Normalise a recommendation to its short form.
-
-    :param recommendation: The recommendation sentence from the synthesis.
-    :returns: ``"adopt"``, ``"keep watching"``, or ``"let go"``.
-    """
-    lowered = recommendation.lower()
-    if "adopt" in lowered:
-        return "adopt"
-    if "let go" in lowered:
-        return "let go"
-    return "keep watching"
 
 
 def _trend_section(cid: str, data: dict[str, Any], prose: dict[str, TrendProse], month: str) -> list[str]:
@@ -325,8 +299,11 @@ async def monthly_node(
 
     if active:
         ranked = sort_ranked([(data["cluster"], data["entries"]) for data in active.values()], _catalog())
+        # Full syntheses run on the thinking model: only for the stories that
+        # converged, strongest first and capped; the rest get one line each.
+        converged = [cluster for cluster, _entries in ranked if _crossed(active[cluster.id])][:MAX_SYNTHESES]
 
-        for cluster, _entries in ranked:
+        for cluster in converged:
             data = active[cluster.id]
             month_news = "\n".join(
                 f"- {entry.week} [{entry.source_id}] {entry.note or entry.title} "

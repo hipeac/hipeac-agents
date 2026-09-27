@@ -98,3 +98,46 @@ class TestMonthlySend:
         assert updates["digest_sent"] is False
         assert not mail.sent
         assert "## Bottom line" in updates["digest_markdown"]
+
+
+class TestSynthesisBudget:
+    async def test_only_converged_stories_get_a_full_synthesis(self, llm):
+        """Each synthesis is a thinking-model call: stories that have not
+        converged get one line, not a synthesis (30-50 calls a month before)."""
+        converged_entries = [
+            ClusterEntry(
+                week=week,
+                finding_id=f"c-{n}",
+                source_id="robot-report",
+                source_class=source_class,
+                region="global",
+                date=date(2026, 7, 8),
+                note=f"Converging {n}.",
+                url=f"https://example.com/c{n}",
+            )
+            for n, (week, source_class) in enumerate(
+                [
+                    ("2026-W27", "aggregators"),
+                    ("2026-W28", "capital"),
+                    ("2026-W29", "programmes"),
+                    ("2026-W30", "aggregators"),
+                ]
+            )
+        ]
+        workspace.append_cluster(
+            Cluster(id="converged", name="Converged story", opened="2026-W27", entries=converged_entries),
+            theme="agentic-ai",
+            created=date(2026, 7, 10),
+        )
+
+        updates = await monthly_node_mod.monthly_node(
+            VisionWatchState.model_construct(week="2026-W31", month="2026-07", send=False),
+            services=Services(crawl=None, mail=None, vision=None),
+            llm=llm,
+        )
+
+        assert sum(schema is TrendProse for schema, _ in llm.calls) == 1
+        markdown = updates["digest_markdown"]
+        assert "### Humanoids at work" in markdown.split("## Also accumulating")[0]
+        accumulating = markdown.split("## Also accumulating")[1].split("## Theme health")[0]
+        assert "**Humanoids** (physical-ai) — 1 new this month" in accumulating
