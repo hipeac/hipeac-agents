@@ -39,6 +39,18 @@ When unsure, keep: a later step judges each kept item in full.
 Return one decision per candidate, by its number.
 """
 
+SELECT_NOTABLE = """\
+You are screening a long list of research papers for the HiPEAC Vision 2027
+watch, a forward-looking roadmap for computing in Europe. Most papers are
+incremental; the watch wants only the few that are real signals for the
+themes below: a result that changes what is possible, a new direction, a
+strong benchmark or negative result, a survey mapping a shifting field, or
+work tied to a major system, standard or policy.
+
+Pick AT MOST {budget} papers from the numbered list, most notable first.
+Fewer is fine; none is fine. Judge from the titles (and abstracts if given).
+"""
+
 GATE = """\
 You are judging one candidate for the HiPEAC Vision 2027 watch, a
 forward-looking roadmap for computing in Europe. The themes are the broad

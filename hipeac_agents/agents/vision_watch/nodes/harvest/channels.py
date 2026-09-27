@@ -427,6 +427,9 @@ async def harvest_feed_source(
 
 
 ARXIV_LISTING = "https://arxiv.org/list/{category}/pastweek?show=2000"
+# Papers per category that reach the full verdict each week: busy categories
+# announce hundreds, nearly all incremental; the source cap keeps 4 of these.
+ARXIV_WEEKLY_PICK = 12
 ARXIV_ABSTRACT = "https://arxiv.org/abs/{paper_id}"
 
 _ARXIV_DAY = re.compile(r"<h3>\s*(\w{3}, \d{1,2} \w{3} \d{4})")
@@ -488,12 +491,14 @@ async def harvest_arxiv_source(
     prior: list[FindingsFile],
     themes: list[schemas.ThemeDef],
 ) -> tuple[list[Finding], list[RejectedItem], SourceOutcome]:
-    """One arXiv category: the papers announced in the week, triaged on their titles.
+    """One arXiv category: the week's most notable papers, picked from their titles.
 
     The listing gives titles only, and busy categories announce hundreds of
-    papers a week, so triage runs on titles first; only the kept papers'
-    abstract pages are fetched (plainly, one a second), and they stand in for
-    the scraped page — nothing goes through the crawl provider. The listing
+    papers a week, nearly all incremental; a keep-yes/no triage keeps almost
+    all of them. So one selection call picks at most ``ARXIV_WEEKLY_PICK``
+    from the titles; only those papers' abstract pages are fetched (plainly,
+    one a second), and they stand in for the scraped page — nothing goes
+    through the crawl provider. The listing
     covers the last five announcement days only, so an older window finds
     nothing.
 
@@ -526,18 +531,17 @@ async def harvest_arxiv_source(
         else:
             candidates.append(candidate)
 
-    kept = await ctx.triage([(c.title, "") for c in candidates], themes) if candidates else set()
+    picked = await ctx.select_notable([(c.title, "") for c in candidates], themes, ARXIV_WEEKLY_PICK)
     rejected.extend(
-        _reject(c, source.id, "off_theme", "triage: no signal for any theme")
+        _reject(c, source.id, "off_theme", f"not among the week's {ARXIV_WEEKLY_PICK} most notable papers")
         for i, c in enumerate(candidates)
-        if i not in kept
+        if i not in set(picked)
     )
 
     survivors: list[CandidateItem] = []
     known: dict[str, ScrapeResult] = {}
-    for i, candidate in enumerate(candidates):
-        if i not in kept:
-            continue
+    for i in picked:
+        candidate = candidates[i]
         page = await services.crawl.fetch_feed(candidate.url)
         abstract = parse_arxiv_abstract(page or "")
         candidate = candidate.model_copy(update={"summary": abstract})

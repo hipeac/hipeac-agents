@@ -79,6 +79,12 @@ class TriageVerdict(BaseModel):
     items: list[TriageItem] = []
 
 
+class NotableSelection(BaseModel):
+    """The most notable items of a long list, most notable first."""
+
+    indices: list[int] = Field(default=[], description="Numbers of the selected items, most notable first")
+
+
 class NearMatchGroups(BaseModel):
     """Groups of finding ids that are the same underlying event (near-match rule)."""
 

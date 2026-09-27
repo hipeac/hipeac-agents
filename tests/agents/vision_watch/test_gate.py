@@ -175,3 +175,25 @@ class TestSweep:
         assert "https://example.com/hit1" not in crawl.scrape_calls
         assert [f.url for f in findings] == ["https://example.com/hit0"]
         assert crawl.search_calls == [themes[0].sweep_query or themes[0].description]
+
+
+class TestSelectNotable:
+    async def test_budget_is_enforced_and_invented_numbers_ignored(self, themes):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import NotableSelection
+
+        ctx = HarvestContext(FakeLLM({NotableSelection: NotableSelection(indices=[2, 99, 2, 0, 1])}))
+
+        assert await ctx.select_notable([(f"t{i}", "") for i in range(5)], themes, budget=2) == [2, 0]
+
+    async def test_long_lists_are_screened_in_rounds(self, themes):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.context import SELECT_BATCH
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import NotableSelection
+
+        llm = FakeLLM({NotableSelection: NotableSelection(indices=[0, 1])})
+
+        picked = await HarvestContext(llm).select_notable(
+            [(f"t{i}", "") for i in range(SELECT_BATCH * 2 + 1)], themes, budget=2
+        )
+
+        assert picked == [0, 1]
+        assert len(llm.calls) == 4, "three batches, then one final pick among their survivors"

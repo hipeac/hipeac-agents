@@ -11,7 +11,7 @@ from hipeac_agents.agents.vision_watch.nodes.harvest.models import (
     CandidateItem,
     CandidateList,
     GateVerdict,
-    TriageVerdict,
+    NotableSelection,
 )
 from hipeac_agents.agents.vision_watch.schemas import SourceEntry
 from hipeac_agents.agents.vision_watch.snapshots import snapshot_feeds
@@ -95,7 +95,7 @@ class TestArxiv:
             "We present an open chiplet interconnect for agentic workloads."
         )
 
-    async def test_triages_titles_then_fetches_only_kept_abstracts(self, themes, monkeypatch):
+    async def test_picks_notable_titles_then_fetches_only_their_abstracts(self, themes, monkeypatch):
         """Regression (baseline B6): arXiv RSS is empty at weekends and the API
         host rejects Python clients; the past-week listing serves any weekday."""
         monkeypatch.setattr("asyncio.sleep", _no_sleep)
@@ -108,7 +108,7 @@ class TestArxiv:
         )
         llm = FakeLLM(
             {
-                TriageVerdict: lambda prompt: TriageVerdict(items=[{"index": 1, "keep": False}]),
+                NotableSelection: NotableSelection(indices=[0, 7]),
                 GateVerdict: make_gate_handler(["agentic-ai"]),
             }
         )

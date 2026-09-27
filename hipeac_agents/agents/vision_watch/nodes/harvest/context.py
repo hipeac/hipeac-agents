@@ -12,7 +12,7 @@ from typing import Any
 from hipeac_agents.agents.vision_watch import schemas
 
 from . import prompts
-from .models import CandidateList, GateVerdict, NearMatchGroups, TriageVerdict
+from .models import CandidateList, GateVerdict, NearMatchGroups, NotableSelection, TriageVerdict
 
 
 # Cap on page markdown fed to the extraction call — listing pages can be
@@ -22,6 +22,9 @@ EXTRACTION_INPUT_CHARS = 12_000
 # Candidates per triage call: large enough for one call per typical source,
 # small enough that no decision gets lost in a long list.
 TRIAGE_BATCH = 40
+
+# Titles per notable-selection call: titles are short, so a long list fits.
+SELECT_BATCH = 100
 
 
 class HarvestContext:
@@ -89,6 +92,44 @@ class HarvestContext:
             dropped = {item.index for item in verdict.items if not item.keep}
             kept.update(offset + i for i in range(len(batch)) if i not in dropped)
         return kept
+
+    async def select_notable(
+        self, items: list[tuple[str, str]], themes: list[schemas.ThemeDef], budget: int
+    ) -> list[int]:
+        """Pick at most ``budget`` notable items from a long list, most notable first.
+
+        LLM judgement call (notable selection) — see ``prompts.SELECT_NOTABLE``.
+        Long lists are screened in batches, each keeping at most ``budget``,
+        then the survivors compete in one final pick. Numbers the model
+        invents are ignored, and the budget is enforced.
+
+        :param items: ``(title, summary)`` per item.
+        :param themes: The themes.
+        :param budget: The most items to keep.
+        :returns: The selected indices, most notable first.
+        """
+        if not items:
+            return []
+
+        themes_text = "\n".join(t.brief() for t in themes)
+
+        async def pick(indices: list[int]) -> list[int]:
+            lines = "\n".join(
+                f"{n}. {items[i][0]}" + (f" — {items[i][1][:200]}" if items[i][1] else "")
+                for n, i in enumerate(indices)
+            )
+            prompt = prompts.SELECT_NOTABLE.format(budget=budget) + f"\n\nThemes:\n{themes_text}\n\nPapers:\n{lines}"
+            chosen = (await self._invoke(NotableSelection, prompt)).indices
+            picked = [indices[n] for n in dict.fromkeys(chosen) if 0 <= n < len(indices)]
+            return picked[:budget]
+
+        pool = list(range(len(items)))
+        while len(pool) > SELECT_BATCH:
+            survivors: list[int] = []
+            for offset in range(0, len(pool), SELECT_BATCH):
+                survivors.extend(await pick(pool[offset : offset + SELECT_BATCH]))
+            pool = survivors
+        return await pick(pool)
 
     async def gate_candidate(
         self,
