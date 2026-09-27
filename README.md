@@ -102,11 +102,13 @@ A fresh clone therefore harvests nothing until you supply a `config/` directory 
 
 Models are configured by capability tier, shared by every agent, never by task:
 
-| Setting              | Tier                                  | vision-watch uses it for                   |
-| -------------------- | ------------------------------------- | ------------------------------------------ |
-| `LLM_SMALL_MODEL`    | cheap, high volume (default `gpt-4o-mini`) | harvest: triage, picks, verdicts (hundreds of calls a week) |
-| `LLM_BASE_MODEL`     | everyday judgement                    | clustering (one call a week)               |
-| `LLM_THINKING_MODEL` | the few calls people read (defaults to the base model) | weekly digest (one call), monthly syntheses (at most 11) |
+| Tier       | Default model (reasoning) | vision-watch uses it for                                     |
+| ---------- | ------------------------- | ------------------------------------------------------------ |
+| `small`    | `gpt-6-luna` (`none`)     | harvest: triage, picks, verdicts — hundreds of calls a week  |
+| `base`     | `gpt-6-sol` (`low`)       | clustering — one call a week                                 |
+| `thinking` | `gpt-6-astra` (`low`)     | weekly digest (one call), monthly syntheses (at most 11)     |
+
+Each tier is set with `LLM_<TIER>_MODEL` and `LLM_<TIER>_REASONING`. An empty reasoning value sends none, for models without reasoning. `temperature=0` is sent only when reasoning is off, because reasoning models reject it otherwise.
 
 `LLM_PROVIDER` picks the provider (default `openai`). Every run prints the model of each tier and ends with its token usage per model; `replay-gate --dry-run` estimates tokens before spending any.
 

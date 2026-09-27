@@ -29,9 +29,13 @@ HIPEAC_MCP_URL = os.environ.get("HIPEAC_MCP_URL") or None
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
 # Three capability tiers, shared by every agent: a cheap small model for
 # high-volume classification, a base model for everyday judgement, and a
-# thinking model for the few calls whose output people read.
-LLM_SMALL_MODEL = os.environ.get("LLM_SMALL_MODEL", "gpt-4o-mini")
-LLM_BASE_MODEL = os.environ.get("LLM_BASE_MODEL", "gpt-5.6-luna")
-LLM_THINKING_MODEL = os.environ.get("LLM_THINKING_MODEL") or LLM_BASE_MODEL
+# thinking model for the few calls whose output people read. Each tier has a
+# reasoning effort; an empty value sends none (models without reasoning).
+LLM_SMALL_MODEL = os.environ.get("LLM_SMALL_MODEL", "gpt-6-luna")
+LLM_SMALL_REASONING = os.environ.get("LLM_SMALL_REASONING", "none")
+LLM_BASE_MODEL = os.environ.get("LLM_BASE_MODEL", "gpt-6-sol")
+LLM_BASE_REASONING = os.environ.get("LLM_BASE_REASONING", "low")
+LLM_THINKING_MODEL = os.environ.get("LLM_THINKING_MODEL", "gpt-6-astra")
+LLM_THINKING_REASONING = os.environ.get("LLM_THINKING_REASONING", "low")
 
 SENTRY_DSN = os.environ.get("SENTRY_DSN") or None

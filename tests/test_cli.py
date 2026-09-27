@@ -236,12 +236,15 @@ class TestModelTiers:
             yield SimpleNamespace(usage_metadata={"gpt-4o-mini": {"input_tokens": 1200, "output_tokens": 80}})
 
         monkeypatch.setattr("hipeac_agents.cli.get_usage_metadata_callback", fake_usage)
+        from hipeac_agents.llms import Tier
+
         monkeypatch.setattr(
-            "hipeac_agents.cli.model_names", lambda: {"small": "gpt-4o-mini", "base": "luna", "thinking": "sol"}
+            "hipeac_agents.cli.tiers",
+            lambda: {"small": Tier("gpt-6-luna", "none"), "base": Tier("gpt-6-sol", "low"), "thinking": Tier("m", "")},
         )
 
         await cli.main(["weekly-digest"])
 
         out = capsys.readouterr().out
-        assert "models: small=gpt-4o-mini, base=luna, thinking=sol" in out
+        assert "models: small=gpt-6-luna (reasoning: none), base=gpt-6-sol (reasoning: low), thinking=m" in out
         assert "gpt-4o-mini: 1,200 tokens in, 80 out" in out

@@ -26,7 +26,7 @@ from langchain_core.callbacks import get_usage_metadata_callback
 from hipeac_agents import settings
 from hipeac_agents.agents.vision_watch import cadence, graph, replay, snapshots, workspace
 from hipeac_agents.agents.vision_watch.state import VisionWatchState
-from hipeac_agents.llms import load_models, model_names, usage_lines
+from hipeac_agents.llms import load_models, tiers, usage_lines
 from hipeac_agents.services.factory import load_services_async
 
 
@@ -164,7 +164,7 @@ async def _replay_gate(
     candidates = {week: replay.recorded_candidates(week)[0] for week in weeks}
     calls = replay.plan_calls(candidates, workspace.read_themes())
     print(f"replay {first}..{last}: {calls}")
-    print(f"  at most ~{calls['est_input_tokens']:,} input tokens on the small model ({model_names()['small']})")
+    print(f"  at most ~{calls['est_input_tokens']:,} input tokens on the small model ({tiers()['small']})")
     if dry_run:
         return 0
 
@@ -187,7 +187,7 @@ async def _replay_gate(
 
 def _print_models() -> None:
     """Say which model each tier runs on, so a wrong setting shows up at once."""
-    print("models: " + ", ".join(f"{tier}={name}" for tier, name in model_names().items()))
+    print("models: " + ", ".join(f"{name}={tier}" for name, tier in tiers().items()))
 
 
 def _print_usage(usage: dict) -> None:
