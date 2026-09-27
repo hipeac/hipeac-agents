@@ -17,8 +17,14 @@ from pathlib import Path
 
 from hipeac_agents.agents.vision_watch import workspace
 from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node
-from hipeac_agents.agents.vision_watch.nodes.harvest.channels import gate_candidates
-from hipeac_agents.agents.vision_watch.nodes.harvest.context import TRIAGE_BATCH, HarvestContext
+from hipeac_agents.agents.vision_watch.nodes.harvest import prompts
+from hipeac_agents.agents.vision_watch.nodes.harvest.channels import PREVERDICT_PICK, gate_candidates
+from hipeac_agents.agents.vision_watch.nodes.harvest.context import (
+    SELECT_BATCH,
+    TRIAGE_BATCH,
+    VERDICT_BATCH,
+    HarvestContext,
+)
 from hipeac_agents.agents.vision_watch.nodes.harvest.models import CandidateItem
 from hipeac_agents.agents.vision_watch.schemas import (
     Finding,
@@ -33,6 +39,9 @@ from hipeac_agents.services.types import ScrapeResult
 from hipeac_agents.services.urls import normalize_url
 from hipeac_agents.storage import cache as json_cache
 
+
+# Rough input tokens each candidate adds to a call, by kind of call.
+ITEM_TOKENS = {"triage": 80, "pick": 30, "verdict": 150, "near_match": 25}
 
 # Only candidates the old gate judged on relevance are worth re-judging;
 # window, duplicate, dead-link and title failures stay what they were.
@@ -106,26 +115,54 @@ def recorded_candidates(week: str) -> tuple[list[RecordedCandidate], list[Reject
     return replay, kept
 
 
-def plan_calls(candidates_by_week: dict[str, list[RecordedCandidate]]) -> dict[str, int]:
-    """Estimate the judgement calls a replay would make, before spending anything.
+def plan_calls(candidates_by_week: dict[str, list[RecordedCandidate]], themes: list[ThemeDef]) -> dict[str, int]:
+    """Estimate the judgement calls and input tokens a replay would use, before spending anything.
+
+    Upper bounds, following the gate: triage per source in batches, a pick
+    when a source has more than ``PREVERDICT_PICK`` candidates, verdicts in
+    batches of ``VERDICT_BATCH`` (a lone candidate and each tip alone), and
+    near-match calls. Tokens are counted at about four characters each.
 
     :param candidates_by_week: The recorded candidates per week.
-    :returns: Counts: weeks, candidates, triage calls, at most this many verdicts, near-match calls.
+    :param themes: The themes, whose text every call carries.
+    :returns: Weeks, candidates, calls per kind, and the estimated input tokens.
     """
-    triage = verdicts = near = 0
+    outline = sum(len(t.outline()) for t in themes) // 4
+    brief = sum(len(t.brief()) for t in themes) // 4
+    triage_cost = len(prompts.TRIAGE) // 4 + outline
+    pick_cost = len(prompts.SELECT_NOTABLE) // 4 + outline
+    verdict_cost = len(prompts.GATE) // 4 + brief
+
+    calls = {"triage_calls": 0, "pick_calls": 0, "verdict_calls": 0, "near_match_calls": 0}
+    tokens = 0
     for candidates in candidates_by_week.values():
         by_source: dict[str, int] = {}
         for c in candidates:
             by_source[c.source_id] = by_source.get(c.source_id, 0) + 1
-        triage += sum(math.ceil(n / TRIAGE_BATCH) for source, n in by_source.items() if source != "board-tip")
-        verdicts += len(candidates)
-        near += math.ceil(len(candidates) / 50)
+        judged = 0
+        for source, n in by_source.items():
+            if source == "board-tip":
+                calls["verdict_calls"] += n
+                tokens += n * (verdict_cost + ITEM_TOKENS["verdict"])
+                judged += n
+                continue
+            calls["triage_calls"] += math.ceil(n / TRIAGE_BATCH)
+            tokens += math.ceil(n / TRIAGE_BATCH) * triage_cost + n * ITEM_TOKENS["triage"]
+            if n > PREVERDICT_PICK:
+                calls["pick_calls"] += math.ceil(n / SELECT_BATCH) + (n > SELECT_BATCH)
+                tokens += (math.ceil(n / SELECT_BATCH) + (n > SELECT_BATCH)) * pick_cost + n * ITEM_TOKENS["pick"]
+            kept = min(n, PREVERDICT_PICK)
+            calls["verdict_calls"] += math.ceil(kept / VERDICT_BATCH)
+            tokens += math.ceil(kept / VERDICT_BATCH) * verdict_cost + kept * ITEM_TOKENS["verdict"]
+            judged += kept
+        calls["near_match_calls"] += math.ceil(judged / 50)
+        tokens += judged * ITEM_TOKENS["near_match"]
+
     return {
         "weeks": len(candidates_by_week),
         "candidates": sum(len(c) for c in candidates_by_week.values()),
-        "triage_calls": triage,
-        "max_verdict_calls": verdicts,
-        "max_near_match_calls": near,
+        **calls,
+        "est_input_tokens": tokens,
     }
 
 

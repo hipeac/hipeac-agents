@@ -162,8 +162,9 @@ async def _replay_gate(
 
     weeks = replay.weeks_between(first, last)
     candidates = {week: replay.recorded_candidates(week)[0] for week in weeks}
-    calls = replay.plan_calls(candidates)
+    calls = replay.plan_calls(candidates, workspace.read_themes())
     print(f"replay {first}..{last}: {calls}")
+    print(f"  at most ~{calls['est_input_tokens']:,} input tokens on the small model ({model_names()['small']})")
     if dry_run:
         return 0
 

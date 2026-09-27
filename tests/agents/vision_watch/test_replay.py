@@ -85,15 +85,28 @@ def test_only_relevance_rejects_are_replayed(recorded):
 def test_plan_calls_counts_before_spending(recorded):
     candidates, _ = replay.recorded_candidates(WEEK)
 
-    calls = replay.plan_calls({WEEK: candidates})
+    calls = replay.plan_calls({WEEK: candidates}, workspace.read_themes())
 
-    assert calls == {
+    assert {k: v for k, v in calls.items() if k != "est_input_tokens"} == {
         "weeks": 1,
         "candidates": 2,
         "triage_calls": 2,
-        "max_verdict_calls": 2,
-        "max_near_match_calls": 1,
+        "pick_calls": 0,
+        "verdict_calls": 2,
+        "near_match_calls": 1,
     }
+    assert 0 < calls["est_input_tokens"] < 20_000
+
+
+def test_plan_calls_budget_busy_sources_to_a_pick(recorded):
+    busy = [
+        replay.RecordedCandidate("sifted", replay.CandidateItem(title=f"t{n}", url=f"https://x/{n}"), "off_theme")
+        for n in range(45)
+    ]
+
+    calls = replay.plan_calls({WEEK: busy}, workspace.read_themes())
+
+    assert (calls["triage_calls"], calls["pick_calls"], calls["verdict_calls"]) == (2, 1, 1)
 
 
 async def test_replay_week_regates_and_reports(recorded, data_dir):
