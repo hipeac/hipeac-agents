@@ -10,22 +10,14 @@ Canonical source of truth for AI coding agents in this repo.
 
 ## Stack
 
-- **Runtime**: Python 3.14, managed with uv. No backend framework — this is a Python library/agent collection, not a web service.
-- **Agent framework**: LangGraph for orchestration, LangChain for model/tool primitives. Each agent is a `StateGraph`, not a freeform agent loop.
-- **MCP**: MCP **client** — only access path via MCP (`hipeac-mcp` through `langchain-mcp-adapters`' `MultiServerMCPClient`, constructed only in `hipeac_agents/mcp_clients.py`). Plain-HTTP services use provider SDKs directly (`firecrawl-py`, `agentmail`). Never touch the `hipeac-redux` DB — all HiPEAC domain data (Vision search, members, jobs, events) via `hipeac-mcp` read-only tools.
-- **Typing/validation**: Pydantic everywhere — graph state, storage schemas, tool I/O.
-- **Storage**: local filesystem under a configurable data directory — no DB, no cloud storage, no Redis, no task queue. Adding any is a deliberate decision to revisit, not a default.
+- **Runtime**: Python 3.14, uv. Library/agent collection, not a web service.
+- **Agents**: LangGraph `StateGraph` per agent (no freeform agent loop); LangChain for model/tool primitives; Pydantic for state, schemas, tool I/O.
+- **Storage**: local filesystem under a configurable data directory — no DB, cloud storage, Redis or task queue. Adding any is a deliberate decision, not a default.
 - **Observability**: Sentry SDK.
 
 ## Commands
 
-A `./run` wrapper exists (`uv run --env-file .env "$@"`). **All project commands must be prefixed with `./run`**. Never call `uv` / `pytest` directly.
-
-```
-./run pytest --cov=hipeac_agents --cov-report=term      # full test suite with coverage
-./run ruff format .                                     # format
-./run ruff check hipeac_agents                          # lint (must be clean before commit)
-```
+All project commands via `./run` (loads `.env`). Never call `uv` / `pytest` directly. `ruff format` + `ruff check hipeac_agents` clean before commit; tool config lives in `pyproject.toml`, no inline ignores without a justification comment.
 
 ## Commit conventions
 
@@ -33,8 +25,7 @@ Conventional Commits: `type(scope): description` — imperative, lowercase, no t
 
 ## Git workflow
 
-- Always branch from `main`. Never branch from another feature branch.
-- Branch naming: `type/short-description` in kebab-case (`feat/vision-watch-harvest`, `fix/cluster-threshold`).
+Branch + PR for sensitive areas — auth, permissions, serializers / schemas, payments, security settings, CI workflows — or when in doubt; everything else may go straight to `main`. Never merge your own PR.
 
 ## Specs
 
@@ -43,43 +34,33 @@ Conventional Commits: `type(scope): description` — imperative, lowercase, no t
 ## Python
 
 - PEP 8; type hints on all signatures.
-- Docstrings (public functions/methods/modules): reST, Sphinx-compatible; no type info — it's in the signature; `:param` / `:returns` / `:raises` end with a period.
+- Docstrings (public functions/methods/modules): reST, Sphinx-compatible; no type info; `:param` / `:returns` / `:raises` end with a period.
 
 ### Testing (pytest)
 
-- All new code requires tests. Tests live in `tests/`, mirroring the package structure, never inline next to source.
-- `pytest-asyncio` is in `auto` mode — async tests (graph nodes, MCP calls) need no marker.
-- Anything touching the filesystem or external services must be guarded/mocked. Never hit the production data directory or live APIs/mailboxes in tests.
-- Markers, addopts, and coverage config live in `pyproject.toml` (`[tool.pytest.ini_options]`, `[tool.coverage.*]`) — don't restate them here.
+- All new code requires tests, in `tests/` mirroring the package structure.
+- Reuse `tests/conftest.py` and `tests/agents/vision_watch/_fakes.py`; don't redefine fakes.
+- Mock the filesystem and external services. Never hit the production data directory or live APIs/mailboxes.
 
-#### Test-review workflow
+When asked to review / audit / add tests:
 
 1. Read tests first; fix weak assertions before running.
-2. Run adjusted suite — failure after adjustment means real bug.
+2. Run adjusted suite — failure after adjustment = real bug.
 3. Fix production code; never weaken a test to force green.
 
-### Ruff
-
-- Ruff handles linting + formatting; rule sets, `target-version`, `line-length`, per-file ignores live in `pyproject.toml` — no inline-ignores without justification comment. `./run ruff format . && ./run ruff check hipeac_agents` before commit.
-
-## LangGraph / LangChain
+## LangGraph
 
 ### Agent layout
 
 - One subpackage per agent under `hipeac_agents/agents/<agent_name>/`: `graph.py`, `state.py`, `nodes/`.
-- Node service boundaries enforced: nodes receive already-built clients, only what their protocol exposes (e.g. pure grouping/tallying node gets none; digest node gets `mail` send plus read-only `vision`). Never pass a node more clients than its skill-design counterpart allows.
-- Judgement-free logic (gates, tallies, thresholds, ranking): plain synchronous type-hinted code, callable without an LLM. Prompts handle only judgement (relevance, tiering, grouping, prose).
+- Nodes receive already-built clients, only what they need (a pure grouping/tallying node gets none; the digest node gets `mail` send plus read-only `vision`).
+- Judgement-free logic (gates, tallies, thresholds, ranking): plain synchronous code, callable without an LLM. Prompts handle only judgement (relevance, grouping, prose).
 
-### Service layer
+### Services
 
-- `hipeac_agents/services/` is the provider-agnostic boundary: `crawl.py` (Firecrawl), `mail.py` (AgentMail), `vision.py` (`hipeac-mcp` over MCP). Protocols first; one provider class per service.
-- `hipeac_agents/services/factory.py` is the only place providers are chosen; each service independently configurable/skippable via `settings.py` env vars, so tests and partial local setups never require all services live.
-- SDK clients are sync, wrapped with `asyncio.to_thread`; tests fake the SDK object (the boundary), never live services.
-
-### MCP client boundary
-
-- `hipeac_agents/mcp_clients.py` is the only place `MultiServerMCPClient` is constructed. Nodes and the CLI never import provider SDKs or `mcp_clients.py` — providers are wired in `services/factory.py` only.
-- If a feature needs new HiPEAC data, add the tool to `hipeac-mcp`, don't reach around it.
+- `hipeac_agents/services/` is the provider boundary (crawl, mail, vision): protocol first, one provider class each. SDK calls wrapped in `asyncio.to_thread`; tests fake the SDK object.
+- Providers are chosen only in `services/factory.py`, each skippable via `settings.py` env vars. Nodes and the CLI never import provider SDKs or `mcp_clients.py`.
+- HiPEAC data (Vision, members, jobs, events) comes only from `hipeac-mcp` read-only tools. Never touch the `hipeac-redux` DB; if new data is needed, add the tool to `hipeac-mcp`.
 
 ### Data model conventions
 
@@ -93,14 +74,14 @@ Use the Sentry MCP server to investigate errors proactively when debugging.
 - **`organizationSlug`**: `ea06`
 - **`projectSlugOrId`**: `hipeac-agents`
 
-Prefer **`resolvedInNextRelease`** over `resolved` — the fix ships with the next deployment rather than being marked live.
+Prefer **`resolvedInNextRelease`** over `resolved` — fix ships with next deployment.
 
 ### Bug fix workflow
 
-When a Sentry issue reveals a bug not covered by an existing test, add a regression test before (or alongside) the fix:
+Sentry issue reveals a bug not covered by an existing test — add regression test before/alongside the fix:
 
-1. **Reproduce first**: write a test that fails against current code, confirming you have isolated the root cause.
-2. **Fix the code**: make the test pass.
-3. **Verify no new gaps**: confirm no related paths are left uncovered.
+1. Reproduce first: failing test against current code, confirming root cause.
+2. Fix code to pass.
+3. Verify no related paths left uncovered.
 
 Never close a Sentry bug without a corresponding regression test.
