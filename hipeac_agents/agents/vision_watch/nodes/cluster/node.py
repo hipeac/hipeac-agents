@@ -5,14 +5,14 @@ from typing import Any
 
 from hipeac_agents.agents.vision_watch import schemas, workspace
 from hipeac_agents.agents.vision_watch.cadence import weeks_before
-from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterLog, Finding, SourceClass
+from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterLog, Finding
 from hipeac_agents.agents.vision_watch.state import ClusterReport, VisionWatchState
 from hipeac_agents.agents.vision_watch.workspace import ClusterExistsError, EntryAlreadyRecordedError
 from hipeac_agents.services.factory import Services
 
 from .models import GroupingPlan
 from .prompts import GROUPING_BAR
-from .tallies import is_candidate_trend, sort_ranked, trend_status
+from .tallies import UNLISTED_CLASS, is_candidate_trend, log_with_current_classes, sort_ranked, trend_status
 
 
 # Clusters seen within this many weeks are shown to the grouping call with
@@ -87,13 +87,11 @@ def _entry_from_finding(week: str, finding: Finding, catalog: schemas.SourceCata
     :param catalog: The parsed source catalog, for the source's class.
     :returns: The cluster entry.
     """
-    classes: dict[str, SourceClass] = {s.id: s.source_class for s in catalog.sources}
-
     return schemas.ClusterEntry(
         week=week,
         finding_id=finding.id,
         source_id=finding.source_id,
-        source_class=classes.get(finding.source_id, "community"),
+        source_class=catalog.class_of(finding.source_id) or UNLISTED_CLASS,
         region=finding.region,
         date=finding.date,
         title=finding.title,
@@ -208,9 +206,11 @@ async def cluster_node(
 
     # Per-theme reports from the refreshed logs.
     for theme in themes:
-        log = workspace.read_cluster_log(theme.theme) or logs[theme.theme]
+        log = log_with_current_classes(workspace.read_cluster_log(theme.theme) or logs[theme.theme], catalog)
         pairs = [(c, c.entries) for c in log.clusters]
-        candidate_trends = [c.id for c, e in sort_ranked([(c, e) for c, e in pairs if is_candidate_trend(e)], catalog)]
+        candidate_trends = [
+            c.id for c, e in sort_ranked([(c, e) for c, e in pairs if is_candidate_trend(e, catalog)], catalog)
+        ]
         theme_unmatched = [f.id for f in findings if theme.theme in f.theme_ids and f.id not in placed_ids]
         reports.append(
             ClusterReport(
@@ -219,7 +219,7 @@ async def cluster_node(
                 clusters_opened=opened_by_theme[theme.theme],
                 findings_unmatched=theme_unmatched,
                 candidate_trends=candidate_trends,
-                notes=[f"{c.id} is {trend_status(e)}" for c, e in pairs],
+                notes=[f"{c.id} is {trend_status(e, catalog)}" for c, e in pairs],
             )
         )
 

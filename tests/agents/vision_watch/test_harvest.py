@@ -15,16 +15,20 @@ from tests.agents.vision_watch._fakes import structured_model
 def catalog() -> SourceCatalog:
     return SourceCatalog.model_validate(
         {
+            "classes": {
+                "press": {"about": "Journalism.", "primary": False},
+                "programmes": {"about": "Public funders."},
+                "foresight": {"about": "Think tanks."},
+            },
             "sources": [
                 {
                     "id": "evidence-source",
                     "name": "Evidence Source",
                     "url": "https://example.com/weekly",
-                    "class": "aggregators",
+                    "class": "press",
                     "themes": ["physical-ai"],
                     "region": "global",
                     "tier": 2,
-                    "independence": "high",
                     "stream": "evidence",
                 },
                 {
@@ -35,7 +39,6 @@ def catalog() -> SourceCatalog:
                     "themes": ["agentic-ai"],
                     "region": "eu",
                     "tier": 2,
-                    "independence": "high",
                     "stream": "evidence",
                 },
                 {
@@ -46,10 +49,9 @@ def catalog() -> SourceCatalog:
                     "themes": [],
                     "region": "global",
                     "tier": 2,
-                    "independence": "high",
                     "stream": "signals",
                 },
-            ]
+            ],
         }
     )
 
@@ -575,35 +577,3 @@ class TestBoardTips:
         assert _display_sender("Eneko Illarramendi <eneko@example.com>") == "Eneko Illarramendi"
         assert _display_sender('"Illarra, E." <e@example.com>') == "Illarra, E."
         assert _display_sender("eneko@example.com") == "eneko@example.com"
-
-
-class TestCapSourceVolumeEdgeCases:
-    """Boundary inputs for the per-source volume cap."""
-
-    def test_no_findings_is_a_no_op(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _cap_source_volume
-
-        assert _cap_source_volume([]) == ([], [])
-
-    def test_significance_floor_kept_items_all_qualifying(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _cap_source_volume
-        from hipeac_agents.agents.vision_watch.schemas import Finding
-
-        finding = Finding(
-            id="",
-            date=date(2026, 6, 12),
-            title="One paper",
-            url="https://arxiv.org/abs/1",
-            source_id="arxiv-cs-ro",
-            region="global",
-            tier=1,
-            theme_ids=["physical-ai"],
-            datapoint="",
-            summary="A summary.",
-            significance=5,
-        )
-
-        kept, rejected = _cap_source_volume([finding])
-
-        assert kept == [finding]
-        assert rejected == []

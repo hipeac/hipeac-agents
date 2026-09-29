@@ -62,10 +62,9 @@ def _source(**overrides) -> SourceEntry:
         "id": "src",
         "name": "Src",
         "url": "https://example.com/site",
-        "class": "aggregators",
+        "class": "press",
         "region": "global",
         "tier": 2,
-        "independence": "high",
         "stream": "evidence",
     }
     return SourceEntry.model_validate({**data, **overrides})

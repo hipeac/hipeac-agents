@@ -50,7 +50,7 @@ def entry(week) -> ClusterEntry:
         week=week,
         finding_id="f-2026-W24-01",
         source_id="robot-report",
-        source_class="aggregators",
+        source_class="press",
         tier=2,
         region="global",
         date=date(2026, 6, 9),
@@ -213,6 +213,33 @@ class TestWeeklyDigest:
             workspace.write_weekly_digest(week, "# Again", data_dir)
 
 
+class TestWeeklyLedger:
+    def test_round_trip_and_write_once(self, data_dir, week):
+        from hipeac_agents.agents.vision_watch.schemas import LedgerEntry, LedgerFile
+
+        entry = LedgerEntry(
+            question_id="cybersecurity.3",
+            question="How are agents kept safe?",
+            lean="containment gaps exposed",
+            theme="cybersecurity",
+            cluster_id="agent-sandbox-escapes",
+            status="strengthening",
+            early=False,
+            finding_ids=["f-1", "f-2"],
+            title="Agents breach boundaries",
+            text="An agent escaped.",
+        )
+        path = workspace.write_weekly_ledger(
+            LedgerFile(week=week, created=date(2026, 6, 12), entries=[entry]), data_dir
+        )
+
+        assert path.name == f"digest-{week}-ledger.json"
+        assert workspace.read_weekly_ledger(week, data_dir).entries == [entry]
+        assert workspace.read_weekly_ledger("2026-W01", data_dir) is None
+        with pytest.raises(WorkspaceError):
+            workspace.write_weekly_ledger(LedgerFile(week=week, created=date(2026, 6, 12)), data_dir)
+
+
 class TestConfig:
     def test_read_themes_in_config_order(self, data_dir):
         themes = workspace.read_themes(data_dir)
@@ -293,6 +320,16 @@ class TestPurgeWeek:
         assert workspace.read_grouping_plan(recorded_week, data_dir) is None
         assert workspace.read_weekly_digest(recorded_week, data_dir) is None
         assert (backup / "evidence" / recorded_week / "grouping.json").exists()
+
+    def test_digest_redo_sets_the_ledger_aside(self, data_dir, recorded_week):
+        from hipeac_agents.agents.vision_watch.schemas import LedgerFile
+
+        workspace.write_weekly_ledger(LedgerFile(week=recorded_week, created=date(2026, 6, 12)), data_dir)
+
+        backup = workspace.purge_week(recorded_week, keep_evidence=True, data_dir=data_dir)
+
+        assert workspace.read_weekly_ledger(recorded_week, data_dir) is None
+        assert (backup / "digests" / "weekly" / f"digest-{recorded_week}-ledger.json").exists()
 
     def test_sent_marker_stays_so_a_redone_week_is_never_mailed_twice(self, data_dir, recorded_week):
         workspace.mark_weekly_digest_sent(recorded_week, "m-1", data_dir)

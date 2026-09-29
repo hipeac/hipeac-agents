@@ -126,7 +126,9 @@ async def test_replay_week_regates_and_reports(recorded, data_dir):
     )
     themes, catalog = workspace.read_themes(), workspace.read_source_catalog()
 
-    findings_file, rejected_file, candidates = await replay.replay_week(HarvestContext(llm), WEEK, themes, catalog)
+    findings_file, rejected_file, candidates = await replay.replay_week(
+        HarvestContext(llm), WEEK, themes, catalog, prior=[]
+    )
 
     assert {f.url for f in findings_file.findings} == {"https://example.com/surgery", "https://example.com/euv"}
     assert [r.reason for r in rejected_file.rejected] == ["out_of_window"]
@@ -137,6 +139,31 @@ async def test_replay_week_regates_and_reports(recorded, data_dir):
     folder = replay.write_replay([(WEEK, findings_file, rejected_file)], report, "test")
     assert (folder / "evidence" / WEEK / "findings.json").exists()
     assert workspace.read_findings_file(WEEK).findings[0].url == "https://example.com/surgery", "live untouched"
+
+
+async def test_replay_week_rejects_pages_recorded_in_an_earlier_week(recorded, data_dir):
+    """Regression: replay ran the gate without the duplicate check, so one page
+    backfilled into several weeks became a finding in each of them."""
+    llm = FakeLLM(
+        {
+            TriageVerdict: lambda prompt: TriageVerdict(items=[]),
+            GateVerdict: GateVerdict(theme_ids=["physical-ai"], tier=1),
+            NearMatchGroups: NearMatchGroups(groups=[]),
+        }
+    )
+    themes, catalog = workspace.read_themes(), workspace.read_source_catalog()
+    earlier = FindingsFile(
+        week="2026-W38",
+        created=date(2026, 9, 19),
+        findings=[workspace.read_findings_file(WEEK).findings[0].model_copy(update={"id": "f-2026-W38-01"})],
+    )
+
+    findings_file, rejected_file, _ = await replay.replay_week(
+        HarvestContext(llm), WEEK, themes, catalog, prior=[earlier]
+    )
+
+    assert "https://example.com/surgery" not in {f.url for f in findings_file.findings}
+    assert ("https://example.com/surgery", "duplicate") in {(r.url, r.reason) for r in rejected_file.rejected}
 
 
 async def test_install_archives_v1_and_carries_source_reports(recorded, data_dir):
@@ -150,7 +177,7 @@ async def test_install_archives_v1_and_carries_source_reports(recorded, data_dir
                     week=WEEK,
                     finding_id="f-2026-W39-01",
                     source_id="robot-report",
-                    source_class="aggregators",
+                    source_class="press",
                     tier=1,
                     region="global",
                     date=date(2026, 9, 22),

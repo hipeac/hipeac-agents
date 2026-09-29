@@ -27,20 +27,20 @@ themes:
 
 SOURCE_CATALOG_YAML = """\
 classes:
-    aggregators: {independence: low}
-    capital: {independence: high}
-    eu-uptake: {independence: low}
-    programmes: {independence: high}
-    foresight: {independence: med}
+    press: {about: Journalism reporting on others' news., primary: false}
+    analysis: {about: Independent expert analysis., primary: false}
+    eu-institutions: {about: EU-level bodies and programmes.}
+    programmes: {about: Governments and public funders.}
+    foresight: {about: Think tanks and foresight units.}
 
 sources:
-    aggregators:
+    press:
         - {id: robot-report, name: Robot Report, url: "https://example.com/robot-report",
-           feed_url: "https://example.com/robot-report/feed", independence: high}
-    capital:
+           feed_url: "https://example.com/robot-report/feed"}
+    analysis:
         - {id: fabricated-knowledge, name: Fabricated Knowledge, url: "https://example.com/fk",
            senders: [fk@substack.com]}
-    eu-uptake:
+    eu-institutions:
         - {id: eu-fund, name: EU Fund, url: "https://example.com/eu", region: eu}
     programmes:
         - {id: darpa-news, name: DARPA News, url: "https://example.com/darpa"}

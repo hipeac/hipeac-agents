@@ -7,13 +7,15 @@ Layout:
 - ``node.py`` — orchestration: story selection, the prose call, citation
   resolution and the budget, markdown assembly, write, send.
 
-The digest tells at most two stories per theme, citing findings by id; code
-turns citations into links, so no URL the model invents is ever published.
-Every finding of the week is kept in the signals log written beside it.
+Per theme, the digest tells at most two stories and lists the other
+candidates as one-line items, each tagged with the open question it moves;
+findings are cited by id, and code turns citations into links, so no URL the
+model invents is ever published. The ledger (every printed item) and the
+signals log (every finding) are written beside it.
 """
 
-from .models import Story, StoryDigest  # noqa: F401
+from .models import DigestItem, WeeklyDigest  # noqa: F401
 from .node import compose_digest_markdown, digest_node, resolve_citations  # noqa: F401
 
 
-__all__ = ["Story", "StoryDigest", "compose_digest_markdown", "digest_node", "resolve_citations"]
+__all__ = ["DigestItem", "WeeklyDigest", "compose_digest_markdown", "digest_node", "resolve_citations"]

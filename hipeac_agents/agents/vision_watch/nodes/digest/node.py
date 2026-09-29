@@ -2,6 +2,8 @@
 
 import logging
 import re
+from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 from hipeac_agents.agents.vision_watch import settings as watch_settings
@@ -9,44 +11,55 @@ from hipeac_agents.agents.vision_watch import workspace
 from hipeac_agents.agents.vision_watch.nodes.cluster.tallies import (
     entries_through,
     is_candidate_trend,
+    log_with_current_classes,
     sort_lead_candidates,
     tally_text,
     trend_status,
 )
-from hipeac_agents.agents.vision_watch.schemas import ClusterEntry, Finding, SourceCatalog, ThemeDef
+from hipeac_agents.agents.vision_watch.schemas import (
+    ClusterEntry,
+    Finding,
+    LedgerEntry,
+    LedgerFile,
+    SourceCatalog,
+    ThemeDef,
+)
 from hipeac_agents.agents.vision_watch.state import VisionWatchState
 from hipeac_agents.services.factory import Services
 from hipeac_agents.services.mail import markdown_to_html
 from hipeac_agents.services.urls import display_domain
 
-from .models import StoryDigest
+from .models import DigestItem, WeeklyDigest
 from .prompts import DIGEST_STORIES
 
 
 logger = logging.getLogger(__name__)
 
-# The digest's budget: the board reads at most this many stories per theme.
-# The model sees a few more candidates than it may write, so it can leave the
-# weak ones out; everything else is kept in the week's signals log.
+# The digest's budget: at most this many full stories per theme; the theme's
+# other candidates that move an answer follow as one-line items, so every
+# question that moved stays visible. Everything is kept in the signals log.
 MAX_STORIES_PER_THEME = 2
 STORY_CANDIDATES_PER_THEME = 4
 FINDINGS_PER_STORY = 4
 
-QUIET_WEEK = StoryDigest(headline="Quiet week", this_week="No new signals reached the watch this week.")
+QUIET_WEEK = WeeklyDigest(headline="Quiet week", this_week="No new signals reached the watch this week.")
+NEW_TOPIC = "NEW"
 
 _CITATION = re.compile(r"\[([^\]]+)\]\((F\d+)\)")
 _BARE_CITATION = re.compile(r"\s*[\[(](F\d+)[\])]")
 _LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 
 
-def _collect_clusters(week: str, themes: list[str]) -> dict[str, dict[str, Any]]:
+def _collect_clusters(week: str, themes: list[str], catalog: SourceCatalog) -> dict[str, dict[str, Any]]:
     """Collect every cluster of the themes, scoped through this week.
 
     Entries recorded after ``week`` are excluded, so a digest re-composed
-    later for the same week sees the same tallies.
+    later for the same week sees the same tallies. Entries carry their
+    source's class as of the current catalog.
 
     :param week: The week label.
     :param themes: The theme ids, in digest order.
+    :param catalog: The source catalog, for the entries' current classes.
     :returns: Cluster id to ``{theme, cluster, entries, this_week}``.
     """
     cluster_data: dict[str, dict[str, Any]] = {}
@@ -56,6 +69,8 @@ def _collect_clusters(week: str, themes: list[str]) -> dict[str, dict[str, Any]]
 
         if log is None:
             continue
+
+        log = log_with_current_classes(log, catalog)
 
         for cluster in log.clusters:
             scoped = entries_through(cluster.entries, week)
@@ -82,13 +97,13 @@ def story_candidates(
 ) -> dict[str, list[tuple[str, dict[str, Any]]]]:
     """Pick each theme's candidate stories: its clusters that moved this week, strongest first.
 
-    Ranked like the old lead story — forward significance, then novelty —
+    Ranked by ``sort_lead_candidates`` — novelty, then this week's reach —
     and cut to ``STORY_CANDIDATES_PER_THEME``.
 
     :param week: The week label.
     :param themes: The themes, in digest order.
     :param cluster_data: Cluster id to ``{theme, cluster, entries, this_week}``.
-    :param catalog: The source catalog, for the independence discount.
+    :param catalog: The source catalog, for the primary-source rule.
     :returns: Theme id to ``(cluster id, cluster data)`` pairs.
     """
     touched = {cid: data for cid, data in cluster_data.items() if data["this_week"]}
@@ -102,41 +117,66 @@ def story_candidates(
     return candidates
 
 
+@dataclass(frozen=True)
+class StoryRef:
+    """A candidate story as the prose call sees it: its theme, cluster and derived status."""
+
+    theme: str
+    cluster_id: str
+    status: str
+
+
+@dataclass
+class Material:
+    """The prose call's input and what code needs to check its answer."""
+
+    text: str
+    refs: dict[str, str] = field(default_factory=dict)
+    finding_ids: dict[str, str] = field(default_factory=dict)
+    stories: dict[str, StoryRef] = field(default_factory=dict)
+
+
 def story_material(
     themes: list[ThemeDef],
     candidates: dict[str, list[tuple[str, dict[str, Any]]]],
     forward_notes: dict[str, str],
-) -> tuple[str, dict[str, str]]:
-    """Render the prose call's input, numbering every finding it may cite.
+    catalog: SourceCatalog,
+) -> Material:
+    """Render the prose call's input: each theme's open questions by id, then its keyed candidates.
 
     :param themes: The themes, in digest order.
     :param candidates: Theme id to its candidate stories.
     :param forward_notes: Finding id to its forward note, when it has one.
-    :returns: ``(material, refs)`` — refs maps each ``F<n>`` to the finding's URL.
+    :param catalog: The source catalog, for each story's trend status.
+    :returns: The material; ``refs`` maps each ``F<n>`` to the finding's URL,
+        ``finding_ids`` each URL to its finding id, ``stories`` each ``S<n>`` to its cluster.
     """
-    refs: dict[str, str] = {}
+    material = Material(text="")
     blocks: list[str] = []
 
     for theme in themes:
         lines = [f'THEME "{theme.theme}" ({theme.heading}) — {theme.description.strip()}']
-        if theme.questions:
-            lines.append(f"Open questions: {' '.join(theme.questions)}")
+        lines.extend(f"Open question {qid}: {question}" for qid, question in theme.questions_by_id.items())
 
         stories = candidates.get(theme.theme, [])
         if not stories:
             lines.append("(no stories this week)")
 
-        for _cluster_id, data in stories:
+        for cluster_id, data in stories:
+            key = f"S{len(material.stories) + 1}"
+            status = trend_status(data["entries"], catalog)
+            material.stories[key] = StoryRef(theme=theme.theme, cluster_id=cluster_id, status=status)
             lines.append(
-                f'Story "{data["cluster"].name}" — {trend_status(data["entries"])}; '
+                f'{key} Story "{data["cluster"].name}" — {status}; '
                 f"{tally_text(data['entries'])}; {len(data['this_week'])} new this week"
             )
             for entry in _ranked(data["this_week"])[:FINDINGS_PER_STORY]:
-                ref = f"F{len(refs) + 1}"
-                refs[ref] = entry.url
+                ref = f"F{len(material.refs) + 1}"
+                material.refs[ref] = entry.url
+                material.finding_ids[entry.url] = entry.finding_id
+                # No significance: the prose call weighs the evidence itself,
+                # unanchored by the small model's scores.
                 about = [f"source: {entry.source_id}"]
-                if entry.significance:
-                    about.append(f"significance {entry.significance}")
                 if entry.horizon:
                     about.append(f"horizon {entry.horizon}")
                 note = forward_notes.get(entry.finding_id)
@@ -146,7 +186,8 @@ def story_material(
 
         blocks.append("\n".join(lines))
 
-    return "\n\n".join(blocks), refs
+    material.text = "\n\n".join(blocks)
+    return material
 
 
 def resolve_citations(text: str, refs: dict[str, str]) -> str:
@@ -161,7 +202,9 @@ def resolve_citations(text: str, refs: dict[str, str]) -> str:
     :param refs: ``F<n>`` to URL, for this digest.
     :returns: The text with markdown links to the given URLs only.
     """
-    text = _CITATION.sub(lambda m: f"[{m.group(1)}]({refs[m.group(2)]})" if m.group(2) in refs else m.group(1), text)
+    text = _CITATION.sub(
+        lambda m: f"[{m.group(1).strip()}]({refs[m.group(2)]})" if m.group(2) in refs else m.group(1).strip(), text
+    )
     text = _BARE_CITATION.sub(
         lambda m: f" ([{display_domain(refs[m.group(1)])}]({refs[m.group(1)]}))" if m.group(1) in refs else "", text
     )
@@ -169,19 +212,22 @@ def resolve_citations(text: str, refs: dict[str, str]) -> str:
     return _LINK.sub(lambda m: m.group(0) if m.group(2) in allowed else m.group(1), text)
 
 
-def newly_converged(cluster_data: dict[str, dict[str, Any]], week: str) -> list[tuple[str, dict[str, Any]]]:
+def newly_converged(
+    cluster_data: dict[str, dict[str, Any]], week: str, catalog: SourceCatalog
+) -> list[tuple[str, dict[str, Any]]]:
     """Find the clusters that crossed the candidate-trend threshold this week.
 
     :param cluster_data: Cluster id to ``{theme, cluster, entries, this_week}``.
     :param week: The week label.
+    :param catalog: The source catalog, for the primary-source rule.
     :returns: ``(cluster id, cluster data)`` for each cluster that converged this week.
     """
     return [
         (cid, data)
         for cid, data in cluster_data.items()
         if data["this_week"]
-        and is_candidate_trend(data["entries"])
-        and not is_candidate_trend([entry for entry in data["entries"] if entry.week < week])
+        and is_candidate_trend(data["entries"], catalog)
+        and not is_candidate_trend([entry for entry in data["entries"] if entry.week < week], catalog)
     ]
 
 
@@ -189,55 +235,147 @@ def _plain(text: str) -> str:
     return text.strip().strip("*#_\"'").strip().rstrip(".")
 
 
+@dataclass
+class _Printed:
+    item: DigestItem
+    ref: StoryRef
+    text: str
+    urls: list[str]
+    also_in: str = ""
+
+
+def _checked_items(week: str, digest: WeeklyDigest, material: Material, questions: dict[str, str]) -> list[_Printed]:
+    """Keep the items code can stand behind: known story and question, first use of a story, cited evidence."""
+    kept: list[_Printed] = []
+    used: set[str] = set()
+    for item in digest.items:
+        ref = material.stories.get(item.story)
+        text = resolve_citations(item.text.strip(), material.refs)
+        urls = list(dict.fromkeys(url for _phrase, url in _LINK.findall(text)))
+        if ref is None or item.story in used:
+            logger.warning("digest %s: dropped item %r, unknown or repeated story %r", week, item.title, item.story)
+        elif item.question != NEW_TOPIC and item.question not in questions:
+            logger.warning("digest %s: dropped item %r, unknown question %r", week, item.title, item.question)
+        elif not urls:
+            logger.warning("digest %s: dropped item %r, it cites no finding", week, item.title)
+        else:
+            used.add(item.story)
+            kept.append(_Printed(item=item, ref=ref, text=text, urls=urls))
+    return kept
+
+
+def _by_theme(themes: list[ThemeDef], items: list[_Printed]) -> dict[str, tuple[list[_Printed], list[_Printed]]]:
+    """Place items under their story's theme: full stories within budget, then short items.
+
+    A finding may appear in several themes when it answers a different question
+    in each (marked "also in"); an item that repeats earlier findings on the
+    same question is an echo and is dropped.
+    """
+    headings = {theme.theme: theme.heading for theme in themes}
+    first_theme: dict[str, str] = {}
+    seen: set[tuple[str, str]] = set()
+    placed: dict[str, tuple[list[_Printed], list[_Printed]]] = {}
+
+    for theme in themes:
+        mine = [p for p in items if p.ref.theme == theme.theme]
+        full = [p for p in mine if not p.item.brief][:MAX_STORIES_PER_THEME]
+        ordered = full + [p for p in mine if p not in full]
+        kept_full, kept_brief = [], []
+        for printed in ordered:
+            if all((printed.item.question, url) in seen for url in printed.urls):
+                continue
+            earlier = [first_theme[url] for url in printed.urls if first_theme.get(url, theme.theme) != theme.theme]
+            printed.also_in = headings.get(earlier[0], earlier[0]) if earlier else ""
+            seen.update((printed.item.question, url) for url in printed.urls)
+            for url in printed.urls:
+                first_theme.setdefault(url, theme.theme)
+            (kept_full if printed in full else kept_brief).append(printed)
+        if kept_full or kept_brief:
+            placed[theme.theme] = (kept_full, kept_brief)
+    return placed
+
+
+def _tag(printed: _Printed, questions: dict[str, str], *, full: bool) -> str:
+    item = printed.item
+    lean = _plain(item.lean)
+    tag = f"new topic: {lean}" if item.question == NEW_TOPIC else f"{questions[item.question]} → {lean}"
+    # Only full stories carry the label: most one-liners come from emerging
+    # clusters, and labelling them all would drown it. The ledger keeps it.
+    if full and printed.ref.status == "emerging":
+        tag += " · early signal"
+    if printed.also_in:
+        tag += f" · also in {printed.also_in}"
+    return tag
+
+
 def compose_digest_markdown(
     week: str,
     themes: list[ThemeDef],
-    digest: StoryDigest,
-    refs: dict[str, str],
+    digest: WeeklyDigest,
+    material: Material,
     tips: list[Finding],
     converged: list[tuple[str, dict[str, Any]]],
     total_signals: int,
-) -> str:
-    """Assemble the digest: bottom line, stories per theme, tips, convergence, quiet themes.
+) -> tuple[str, LedgerFile]:
+    """Assemble the digest and its ledger: bottom line, tagged items per theme, tips, convergence, quiet themes.
 
-    The budget is enforced here, not trusted to the model: at most
-    ``MAX_STORIES_PER_THEME`` stories per theme, stories on unknown themes
-    dropped, and a story that ends up citing no finding dropped — a story
-    without evidence is not one.
+    The rules are enforced here, not trusted to the model: unknown stories
+    and questions dropped, an item citing no finding dropped, at most
+    ``MAX_STORIES_PER_THEME`` full stories per theme, echoes dropped, and the
+    early-signal label taken from the story's derived status (printed on full
+    stories only; the ledger flags every item).
 
     :param week: The week label.
     :param themes: The themes, in digest order.
     :param digest: The prose call's output.
-    :param refs: ``F<n>`` to URL, for this digest.
+    :param material: The prose call's input, for citations, story keys and finding ids.
     :param tips: The week's board-tip findings.
     :param converged: The clusters that crossed the candidate-trend threshold this week.
     :param total_signals: The number of findings this week.
-    :returns: The digest markdown.
+    :returns: ``(markdown, ledger)`` — the ledger lists every printed item.
     """
-    by_theme: dict[str, list[tuple[str, str]]] = {}
-    for story in digest.stories:
-        text = resolve_citations(story.text.strip(), refs)
-        if "](http" not in text:
-            logger.warning("digest %s: dropped story %r, it cites no finding", week, story.title)
-            continue
-        by_theme.setdefault(story.theme, []).append((_plain(story.title), text))
+    questions = {qid: question for theme in themes for qid, question in theme.questions_by_id.items()}
+    placed = _by_theme(themes, _checked_items(week, digest, material, questions))
+    ledger = LedgerFile(week=week, created=date.today())
 
     lines = [
         f"# HiPEAC Vision Watch — Week {week}: {_plain(digest.headline) or 'Quiet week'}",
         "",
-        resolve_citations(digest.this_week.strip(), refs),
+        resolve_citations(digest.this_week.strip(), material.refs),
         "",
     ]
 
-    told = 0
+    stories = briefs = 0
     for theme in themes:
-        stories = by_theme.get(theme.theme, [])[:MAX_STORIES_PER_THEME]
-        if not stories:
+        if theme.theme not in placed:
             continue
+        full, brief = placed[theme.theme]
         lines.extend([f"## {theme.heading}", ""])
-        for title, text in stories:
-            lines.extend([f"**{title}.** {text}", ""])
-            told += 1
+        for printed in full:
+            lines.extend(
+                [f"**{_plain(printed.item.title)}.** {printed.text}", f"_{_tag(printed, questions, full=True)}_", ""]
+            )
+        if brief:
+            lines.extend(["Also moving:", ""])
+            lines.extend(f"- {printed.text} _({_tag(printed, questions, full=False)})_" for printed in brief)
+            lines.append("")
+        stories += len(full)
+        briefs += len(brief)
+        ledger.entries.extend(
+            LedgerEntry(
+                question_id=printed.item.question,
+                question=questions.get(printed.item.question, ""),
+                lean=_plain(printed.item.lean),
+                theme=theme.theme,
+                cluster_id=printed.ref.cluster_id,
+                status=printed.ref.status,
+                early=printed.ref.status == "emerging",
+                finding_ids=[material.finding_ids[url] for url in printed.urls if url in material.finding_ids],
+                title=_plain(printed.item.title),
+                text=printed.text,
+            )
+            for printed in full + brief
+        )
 
     if tips:
         lines.extend(["## Board tips", ""])
@@ -255,15 +393,16 @@ def compose_digest_markdown(
         )
         lines.append("")
 
-    quiet = [theme.heading for theme in themes if not by_theme.get(theme.theme)]
+    quiet = [theme.heading for theme in themes if theme.theme not in placed]
     if quiet:
         lines.extend([f"_Quiet this week: {', '.join(quiet)}._", ""])
 
     lines.append(
-        f"_{told} {'story' if told == 1 else 'stories'} from {total_signals} signals this week; "
+        f"_{stories} {'story' if stories == 1 else 'stories'} and {briefs} short "
+        f"{'item' if briefs == 1 else 'items'} from {total_signals} signals this week; "
         f"all signals are listed in {workspace.signals_filename(week)}._"
     )
-    return "\n".join(lines) + "\n"
+    return "\n".join(lines) + "\n", ledger
 
 
 def compose_signals_log(
@@ -314,9 +453,10 @@ async def digest_node(
 ) -> dict[str, Any]:
     """Compose the week's digest from the cluster logs, write it, send it.
 
-    One prose call writes the stories; code picks the candidates, resolves
-    the citations and enforces the budget. The full list of the week's
-    findings is written next to the digest as its signals log.
+    One prose call tags each candidate with the open question it moves; code
+    picks the candidates, checks the tags, resolves the citations and enforces
+    the budget. The week's ledger (every printed item) and signals log (every
+    finding) are written next to the digest.
 
     :param state: The graph state; carries the week and the ``send`` opt-in.
     :param services: The wired services (mail for the send step).
@@ -333,24 +473,26 @@ async def digest_node(
         return {"digest_markdown": recorded, "digest_sent": await _send(services, state, week, recorded)}
 
     themes = workspace.read_themes()
-    cluster_data = _collect_clusters(week, [theme.theme for theme in themes])
+    catalog = workspace.read_source_catalog()
+    cluster_data = _collect_clusters(week, [theme.theme for theme in themes], catalog)
     findings_file = workspace.read_findings_file(week)
     findings = findings_file.findings if findings_file else []
 
-    candidates = story_candidates(week, themes, cluster_data, _catalog())
+    candidates = story_candidates(week, themes, cluster_data, catalog)
     forward_notes = {finding.id: finding.forward_note for finding in findings if finding.forward_note}
-    material, refs = story_material(themes, candidates, forward_notes)
+    material = story_material(themes, candidates, forward_notes, catalog)
 
-    if refs:
-        digest = await llm.with_structured_output(StoryDigest).ainvoke(DIGEST_STORIES + "\n\n" + material)
+    if material.refs:
+        digest = await llm.with_structured_output(WeeklyDigest).ainvoke(DIGEST_STORIES + "\n\n" + material.text)
     else:
         digest = QUIET_WEEK
 
     tips = [finding for finding in findings if finding.source_id == "board-tip"]
-    markdown = compose_digest_markdown(
-        week, themes, digest, refs, tips, newly_converged(cluster_data, week), len(findings)
+    markdown, ledger = compose_digest_markdown(
+        week, themes, digest, material, tips, newly_converged(cluster_data, week, catalog), len(findings)
     )
     workspace.write_weekly_signals(week, compose_signals_log(week, themes, cluster_data, findings))
+    workspace.write_weekly_ledger(ledger)
     workspace.write_weekly_digest(week, markdown)
 
     return {"digest_markdown": markdown, "digest_sent": await _send(services, state, week, markdown)}
@@ -390,8 +532,3 @@ async def _send(services: Services, state: VisionWatchState, week: str, markdown
     )
     workspace.mark_weekly_digest_sent(week, message_id)
     return True
-
-
-def _catalog() -> SourceCatalog:
-    """Read the source catalog, for the ranking's independence discount."""
-    return workspace.read_source_catalog()

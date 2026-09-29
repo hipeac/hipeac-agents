@@ -13,7 +13,7 @@ from hipeac_agents.agents.vision_watch.nodes import cluster as cluster_node_mod
 from hipeac_agents.agents.vision_watch.nodes import digest as digest_node_mod
 from hipeac_agents.agents.vision_watch.nodes import harvest as harvest_node_mod
 from hipeac_agents.agents.vision_watch.nodes.cluster import GroupingPlan
-from hipeac_agents.agents.vision_watch.nodes.digest import Story, StoryDigest
+from hipeac_agents.agents.vision_watch.nodes.digest import DigestItem, WeeklyDigest
 from hipeac_agents.agents.vision_watch.nodes.harvest.models import (
     CandidateList,
     GateVerdict,
@@ -54,17 +54,16 @@ class TestHarvestNode:
     def weekly_catalog(self, data_dir):
         config = workspace.workspace_root(data_dir) / "config" / "source-catalog.yaml"
         config.write_text(
-            "meta:\n"
-            "    version: 1\n"
+            "classes:\n"
+            "    press: {about: Journalism., primary: false}\n"
             "sources:\n"
             "    - id: robot-report\n"
             "      name: Robot Report\n"
             "      url: https://example.com/feed\n"
-            "      class: aggregators\n"
+            "      class: press\n"
             "      themes: [physical-ai]\n"
             "      region: global\n"
             "      tier: 2\n"
-            "      independence: high\n"
             "      stream: evidence\n",
             encoding="utf-8",
         )
@@ -159,7 +158,7 @@ class TestHarvestNode:
                         week="2026-W24",
                         finding_id="f-2026-W24-01",
                         source_id="robot-report",
-                        source_class="aggregators",
+                        source_class="press",
                         tier=2,
                         region="global",
                         date=date(2026, 6, 9),
@@ -258,17 +257,16 @@ class TestHarvestNode:
         monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.AGENTMAIL_INBOX_VISION_WATCH", "vision-news")
         config = workspace.workspace_root(data_dir) / "config" / "source-catalog.yaml"
         config.write_text(
-            "meta:\n"
-            "    version: 1\n"
+            "classes:\n"
+            "    press: {about: Journalism., primary: false}\n"
             "sources:\n"
             "    - id: newsletter-source\n"
             "      name: Newsletter Source\n"
             "      url: https://example.com/site\n"
-            "      class: aggregators\n"
+            "      class: press\n"
             "      themes: [physical-ai]\n"
             "      region: global\n"
             "      tier: 2\n"
-            "      independence: high\n"
             "      web: false\n"
             "      senders: [newsletter@substack.com]\n",
             encoding="utf-8",
@@ -596,7 +594,7 @@ class TestClusterNode:
                             "week": "2026-W23",
                             "finding_id": "f-old",
                             "source_id": "robot-report",
-                            "source_class": "aggregators",
+                            "source_class": "press",
                             "tier": 2,
                             "region": "global",
                             "date": "2026-06-05",
@@ -649,14 +647,25 @@ class TestClusterNode:
         assert updates["notes"] and "joined no cluster" in updates["notes"][0]
 
 
-def _digest_entry(week: str, finding_id: str, url: str, significance: int = 3, source_class: str = "aggregators"):
+# The conftest catalog's sources and their classes: tallies read an entry's
+# class from the catalog, so a test varies the source, not the recorded class.
+_CATALOG_CLASSES = {
+    "robot-report": "press",
+    "fabricated-knowledge": "analysis",
+    "eu-fund": "eu-institutions",
+    "darpa-news": "programmes",
+    "signals-watch": "foresight",
+}
+
+
+def _digest_entry(week: str, finding_id: str, url: str, significance: int = 3, source_id: str = "robot-report"):
     from hipeac_agents.agents.vision_watch.schemas import ClusterEntry
 
     return ClusterEntry(
         week=week,
         finding_id=finding_id,
-        source_id="robot-report",
-        source_class=source_class,
+        source_id=source_id,
+        source_class=_CATALOG_CLASSES[source_id],
         region="global",
         date=date(2026, 6, 9),
         note=f"Note {finding_id}",
@@ -710,7 +719,7 @@ class TestDigestNode:
         )
 
     async def test_writes_stories_under_their_theme_and_the_signals_log(self, llm):
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
 
         updates = await self._run(llm)
 
@@ -721,7 +730,12 @@ class TestDigestNode:
         assert "## One big thing" not in markdown
         assert (workspace.weekly_digest_dir() / "digest-2026-W24.md").exists()
         assert (workspace.weekly_digest_dir() / "digest-2026-W24-signals.md").exists()
-        assert "1 story from 0 signals this week" in markdown
+        assert "_new topic: moving forward · early signal_" in physical
+        assert "1 story and 0 short items from 0 signals this week" in markdown
+        ledger = workspace.read_weekly_ledger("2026-W24")
+        assert [(e.question_id, e.cluster_id, e.early) for e in ledger.entries] == [
+            ("NEW", "humanoid-deployment", True)
+        ]
 
     async def test_theme_title_is_the_heading_when_set(self, llm, data_dir):
         config = workspace.workspace_root(data_dir) / "config" / "themes.yaml"
@@ -729,7 +743,7 @@ class TestDigestNode:
             "themes:\n  - theme: physical-ai\n    title: Physical AI\n    description: AI in the physical world.\n",
             encoding="utf-8",
         )
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
 
         updates = await self._run(llm)
 
@@ -739,7 +753,7 @@ class TestDigestNode:
         monkeypatch.setattr(
             "hipeac_agents.agents.vision_watch.settings.HIPEAC_VISION_REPLY_TO", "webmaster@example.com"
         )
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
         mail = FakeMail()
 
         updates = await self._run(llm, send=True, mail=mail)
@@ -753,7 +767,7 @@ class TestDigestNode:
         assert "## physical-ai" not in html
 
     async def test_skips_send_without_mail_service(self, llm):
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
 
         updates = await self._run(llm, send=True)
 
@@ -761,7 +775,7 @@ class TestDigestNode:
 
     async def test_sending_is_opt_in(self, llm):
         """Sending is opt-in: a fully configured run without ``send`` mails no one."""
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
         mail = FakeMail()
 
         updates = await self._run(llm, mail=mail)
@@ -788,7 +802,7 @@ class TestDigestNode:
         """Regression (baseline B1): with sending opt-in, compose → review →
         ``--send`` silently mailed no one, because the recorded-digest replay
         returned before the send step."""
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
         mail = FakeMail()
 
         composed = await self._run(llm, mail=mail)
@@ -803,25 +817,36 @@ class TestDigestNode:
         assert not llm.calls, "sending a recorded digest must cost no LLM calls"
 
     async def test_exactly_one_prose_call_per_run(self, llm):
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
 
         await self._run(llm)
 
-        assert [schema for schema, _ in llm.calls] == [StoryDigest]
+        assert [schema for schema, _ in llm.calls] == [WeeklyDigest]
+
+    def test_citation_text_is_trimmed(self):
+        """Regression: the model wrote "[ $3.36 billion round](F2)" and the link text kept the space."""
+        from hipeac_agents.agents.vision_watch.nodes.digest.node import resolve_citations
+
+        text = resolve_citations("Nscale secured a [ $3.36 billion round ](F2).", {"F2": "https://x/2"})
+
+        assert text == "Nscale secured a [$3.36 billion round](https://x/2)."
 
     async def test_model_urls_and_unknown_citations_never_become_links(self, llm):
         """The model cites findings by id; only the URLs it was given can be linked."""
-        llm.handlers[StoryDigest] = StoryDigest(
+        llm.handlers[WeeklyDigest] = WeeklyDigest(
             headline="H",
             this_week="See [the real one](F1).",
-            stories=[
-                Story(
-                    theme="physical-ai",
+            items=[
+                DigestItem(
+                    story="S1",
+                    question="NEW",
+                    lean="humanoid deployments",
                     title="Mixed evidence",
                     text=(
                         "A [real finding](F1), a [made-up link](https://evil.example/x), "
                         "a [ghost](F99) and a bare (F1)."
                     ),
+                    brief=False,
                 )
             ],
         )
@@ -834,31 +859,13 @@ class TestDigestNode:
         assert "a bare ([example.com](https://example.com/a))." in markdown
         assert "[real finding](https://example.com/a)" in markdown
 
-    async def test_budget_is_enforced_in_code(self, llm):
-        """At most 2 stories per theme; unknown themes and uncited stories never print."""
-        llm.handlers[StoryDigest] = StoryDigest(
-            headline="H",
-            this_week="Opener.",
-            stories=[
-                Story(theme="physical-ai", title="One", text="First [x](F1)."),
-                Story(theme="physical-ai", title="Uncited", text="No evidence here."),
-                Story(theme="physical-ai", title="Two", text="Second [x](F1)."),
-                Story(theme="physical-ai", title="Three", text="Third [x](F1)."),
-                Story(theme="no-such-theme", title="Stray", text="Stray [x](F1)."),
-            ],
-        )
+    async def test_quiet_week_writes_an_empty_ledger(self, llm):
+        await self._run(llm, week="2026-W30")
 
-        markdown = (await self._run(llm))["digest_markdown"]
-
-        assert "**One.**" in markdown
-        assert "**Two.**" in markdown
-        assert "Three" not in markdown
-        assert "Uncited" not in markdown
-        assert "Stray" not in markdown
-        assert "2 stories from" in markdown
+        assert workspace.read_weekly_ledger("2026-W30").entries == []
 
     async def test_quiet_themes_are_named_once(self, llm):
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
 
         markdown = (await self._run(llm))["digest_markdown"]
 
@@ -887,7 +894,7 @@ class TestDigestNode:
                 ],
             )
         )
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
 
         markdown = (await self._run(llm))["digest_markdown"]
 
@@ -898,29 +905,29 @@ class TestDigestNode:
     async def test_newly_converged_story_is_flagged_once(self, llm):
         from hipeac_agents.agents.vision_watch.schemas import Cluster
 
-        def entries(cid, weeks_and_classes):
+        def entries(cid, weeks_and_sources):
             return [
-                _digest_entry(week, f"{cid}-{n}", f"https://example.com/{cid}/{n}", source_class=source_class)
-                for n, (week, source_class) in enumerate(weeks_and_classes)
+                _digest_entry(week, f"{cid}-{n}", f"https://example.com/{cid}/{n}", source_id=source_id)
+                for n, (week, source_id) in enumerate(weeks_and_sources)
             ]
 
         crossing = entries(
             "crossing",
             [
-                ("2026-W22", "aggregators"),
-                ("2026-W23", "capital"),
-                ("2026-W24", "programmes"),
-                ("2026-W24", "aggregators"),
+                ("2026-W22", "robot-report"),
+                ("2026-W23", "fabricated-knowledge"),
+                ("2026-W24", "darpa-news"),
+                ("2026-W24", "robot-report"),
             ],
         )
         already = entries(
             "already",
             [
-                ("2026-W20", "aggregators"),
-                ("2026-W21", "capital"),
-                ("2026-W22", "programmes"),
-                ("2026-W23", "aggregators"),
-                ("2026-W24", "capital"),
+                ("2026-W20", "robot-report"),
+                ("2026-W21", "fabricated-knowledge"),
+                ("2026-W22", "darpa-news"),
+                ("2026-W23", "robot-report"),
+                ("2026-W24", "fabricated-knowledge"),
             ],
         )
         for cid, name, items in (("crossing", "Crossing now", crossing), ("already", "Converged before", already)):
@@ -929,7 +936,7 @@ class TestDigestNode:
                 theme="agentic-ai",
                 created=date(2026, 1, 8),
             )
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
 
         markdown = (await self._run(llm))["digest_markdown"]
 
@@ -948,7 +955,7 @@ class TestDigestNode:
                 ],
             )
         )
-        llm.handlers[StoryDigest] = make_story_handler()
+        llm.handlers[WeeklyDigest] = make_story_handler()
 
         await self._run(llm)
 
@@ -977,9 +984,12 @@ class TestStorySelection:
     def test_candidates_are_ranked_and_capped_per_theme(self, themes, data_dir):
         from hipeac_agents.agents.vision_watch.nodes.digest.node import story_candidates
 
+        # Five new stories: the one with most entries this week leads; significance plays no part.
         data = {
             f"c{n}": self._cluster_data(
-                f"c{n}", "agentic-ai", [_digest_entry("2026-W24", f"c{n}", f"https://x/{n}", significance=n)]
+                f"c{n}",
+                "agentic-ai",
+                [_digest_entry("2026-W24", f"c{n}-{i}", f"https://x/{n}/{i}", significance=6 - n) for i in range(n)],
             )
             for n in range(1, 6)
         }
@@ -992,19 +1002,225 @@ class TestStorySelection:
         assert [cid for cid, _ in candidates["agentic-ai"]] == ["c5", "c4", "c3", "c2"]
         assert candidates["physical-ai"] == []
 
-    def test_material_numbers_the_strongest_findings_and_scopes_to_the_week(self, themes):
-        from hipeac_agents.agents.vision_watch.nodes.digest.node import story_material
+    def test_material_numbers_the_strongest_findings_and_scopes_to_the_week(self, themes, data_dir):
+        from hipeac_agents.agents.vision_watch.nodes.digest.node import StoryRef, story_material
 
         entries = [_digest_entry("2026-W24", f"e{n}", f"https://x/{n}", significance=n) for n in range(1, 6)]
         entries.append(_digest_entry("2026-W23", "earlier", "https://x/earlier"))
         story = self._cluster_data("story", "agentic-ai", entries)
 
-        material, refs = story_material(themes, {"agentic-ai": [("story", story)]}, {"e5": "Could matter."})
+        material = story_material(
+            themes, {"agentic-ai": [("story", story)]}, {"e5": "Could matter."}, workspace.read_source_catalog(data_dir)
+        )
 
-        assert refs == {"F1": "https://x/5", "F2": "https://x/4", "F3": "https://x/3", "F4": "https://x/2"}
-        assert "F1: Note e5 (source: robot-report; significance 5) Forward note: Could matter." in material
-        assert "6 findings · 1 source class · 2 weeks; 5 new this week" in material
-        assert "(no stories this week)" in material.split('THEME "physical-ai"')[1].split("THEME")[0]
+        assert material.refs == {"F1": "https://x/5", "F2": "https://x/4", "F3": "https://x/3", "F4": "https://x/2"}
+        assert material.finding_ids["https://x/5"] == "e5"
+        assert material.stories == {"S1": StoryRef(theme="agentic-ai", cluster_id="story", status="emerging")}
+        assert 'S1 Story "Story" — emerging; 6 findings · 1 source class · 2 weeks; 5 new this week' in material.text
+        assert "F1: Note e5 (source: robot-report) Forward note: Could matter." in material.text
+        assert "significance" not in material.text, "the prose call weighs the evidence without the gate's scores"
+        assert "Open question next-computing-paradigm.1: Are personal AI orchestrators emerging?" in material.text
+        assert "(no stories this week)" in material.text.split('THEME "physical-ai"')[1].split("THEME")[0]
+
+
+class TestComposeDigest:
+    """Assembly rules, enforced in code whatever the prose call returns."""
+
+    WEEK = "2026-W24"
+
+    @pytest.fixture
+    def themes(self):
+        from hipeac_agents.agents.vision_watch.schemas import ThemeDef
+
+        return [
+            ThemeDef(theme="new-hardware", title="New hardware", description="Chips.", questions=["Which win?"]),
+            ThemeDef(
+                theme="physical-ai",
+                title="Physical AI",
+                description="Robots.",
+                questions=["Paid work?", "On site?"],
+            ),
+        ]
+
+    @staticmethod
+    def _material(stories: dict[str, tuple[str, str]]):
+        """Story key to (theme, status); story S<n> cites F<n> at https://x/<n>."""
+        from hipeac_agents.agents.vision_watch.nodes.digest.node import Material, StoryRef
+
+        material = Material(text="")
+        for n, (key, (theme, status)) in enumerate(stories.items(), 1):
+            material.stories[key] = StoryRef(theme=theme, cluster_id=f"c-{key}", status=status)
+            material.refs[f"F{n}"] = f"https://x/{n}"
+            material.finding_ids[f"https://x/{n}"] = f"f-{n}"
+        return material
+
+    @staticmethod
+    def _item(story, question, text, brief=False, title=None):
+        return DigestItem(
+            story=story, question=question, lean="moving", title=title or f"Title {story}", text=text, brief=brief
+        )
+
+    def _compose(self, themes, material, items):
+        from hipeac_agents.agents.vision_watch.nodes.digest.node import compose_digest_markdown
+
+        digest = WeeklyDigest(headline="H", this_week="Bottom line.", items=items)
+        return compose_digest_markdown(self.WEEK, themes, digest, material, [], [], 10)
+
+    def test_question_text_instead_of_id(self, themes, caplog):
+        material = self._material({"S1": ("physical-ai", "strengthening")})
+
+        markdown, ledger = self._compose(themes, material, [self._item("S1", "Paid work?", "Robots [paid](F1).")])
+
+        assert "Robots" not in markdown
+        assert ledger.entries == []
+        assert "unknown question 'Paid work?'" in caplog.text
+
+    def test_story_answers_another_lines_question(self, themes):
+        material = self._material({"S1": ("new-hardware", "strengthening")})
+
+        markdown, ledger = self._compose(
+            themes, material, [self._item("S1", "physical-ai.2", "Inference [runs onboard](F1).")]
+        )
+
+        section = markdown.split("## New hardware")[1]
+        assert "_On site? → moving_" in section
+        assert "## Physical AI" not in markdown
+        assert (ledger.entries[0].theme, ledger.entries[0].question) == ("new-hardware", "On site?")
+
+    def test_same_question_in_two_themes(self, themes):
+        material = self._material({"S1": ("new-hardware", "strengthening"), "S2": ("physical-ai", "strengthening")})
+
+        markdown, ledger = self._compose(
+            themes,
+            material,
+            [
+                self._item("S1", "physical-ai.2", "Memory [added](F1)."),
+                self._item("S2", "physical-ai.2", "Memory again [added](F1).", brief=True),
+            ],
+        )
+
+        assert "Memory again" not in markdown
+        assert len(ledger.entries) == 1
+
+    def test_different_question_in_each_theme(self, themes):
+        material = self._material({"S1": ("new-hardware", "strengthening"), "S2": ("physical-ai", "strengthening")})
+
+        markdown, ledger = self._compose(
+            themes,
+            material,
+            [
+                self._item("S1", "new-hardware.1", "EDA [moves](F1)."),
+                self._item("S2", "physical-ai.1", "EDA for robots [moves](F1)."),
+            ],
+        )
+
+        physical = markdown.split("## Physical AI")[1]
+        assert "_Paid work? → moving · also in New hardware_" in physical
+        assert len(ledger.entries) == 2
+
+    def test_one_item_on_a_question(self, themes):
+        material = self._material({"S1": ("physical-ai", "emerging"), "S2": ("physical-ai", "strengthening")})
+
+        markdown, ledger = self._compose(
+            themes,
+            material,
+            [self._item("S1", "physical-ai.1", "A [first](F1)."), self._item("S2", "physical-ai.2", "B [second](F2).")],
+        )
+
+        assert "_Paid work? → moving · early signal_" in markdown
+        assert "_On site? → moving_" in markdown
+        assert [e.early for e in ledger.entries] == [True, False]
+
+    def test_three_stories_offered(self, themes):
+        material = self._material({f"S{n}": ("physical-ai", "strengthening") for n in range(1, 4)})
+
+        markdown, _ = self._compose(
+            themes, material, [self._item(f"S{n}", "physical-ai.1", f"Story {n} [x](F{n}).") for n in range(1, 4)]
+        )
+
+        assert "**Title S1.**" in markdown and "**Title S2.**" in markdown
+        assert "Also moving:\n\n- Story 3 [x](https://x/3). _(Paid work? → moving)_" in markdown
+        assert "2 stories and 1 short item from 10 signals" in markdown
+
+    def test_unknown_repeated_and_uncited_items_are_dropped(self, themes):
+        material = self._material({"S1": ("physical-ai", "strengthening")})
+
+        markdown, ledger = self._compose(
+            themes,
+            material,
+            [
+                self._item("S1", "physical-ai.1", "Kept [x](F1)."),
+                self._item("S1", "physical-ai.2", "Repeated story [x](F1)."),
+                self._item("S9", "physical-ai.1", "Unknown story [x](F1)."),
+                self._item("S1", "physical-ai.1", "No evidence here."),
+            ],
+        )
+
+        assert "Kept" in markdown
+        assert not any(word in markdown for word in ("Repeated", "Unknown story", "No evidence"))
+        assert len(ledger.entries) == 1
+
+    def test_a_normal_week(self, themes):
+        material = self._material({"S1": ("new-hardware", "strengthening"), "S2": ("physical-ai", "emerging")})
+
+        markdown, ledger = self._compose(
+            themes,
+            material,
+            [
+                self._item("S1", "new-hardware.1", "Chips [ship](F1)."),
+                self._item("S2", "NEW", "Robots [sell](F2).", brief=True),
+            ],
+        )
+
+        assert markdown.index("## New hardware") < markdown.index("## Physical AI")
+        assert "- Robots [sell](https://x/2). _(new topic: moving)_" in markdown
+        assert "1 story and 1 short item from 10 signals" in markdown
+
+    def test_early_one_line_item(self, themes):
+        material = self._material({"S1": ("physical-ai", "emerging"), "S2": ("physical-ai", "emerging")})
+
+        markdown, ledger = self._compose(
+            themes,
+            material,
+            [
+                self._item("S1", "physical-ai.1", "A [first](F1)."),
+                self._item("S2", "physical-ai.2", "B [second](F2).", brief=True),
+            ],
+        )
+
+        assert "_Paid work? → moving · early signal_" in markdown
+        assert "- B [second](https://x/2). _(On site? → moving)_" in markdown
+        assert [e.early for e in ledger.entries] == [True, True]
+
+    def test_signal_recorded(self, themes):
+        material = self._material({"S1": ("physical-ai", "strengthening")})
+        material.refs["F2"] = "https://x/2b"
+        material.finding_ids["https://x/2b"] = "f-2b"
+
+        _, ledger = self._compose(
+            themes, material, [self._item("S1", "physical-ai.2", "An [escape](F1) and a [publish](F2).")]
+        )
+
+        entry = ledger.entries[0]
+        assert (entry.question_id, entry.question, entry.lean, entry.cluster_id, entry.status) == (
+            "physical-ai.2",
+            "On site?",
+            "moving",
+            "c-S1",
+            "strengthening",
+        )
+        assert entry.finding_ids == ["f-1", "f-2b"]
+
+
+class TestDigestPrompt:
+    def test_weighs_by_the_open_questions_not_size_or_money(self):
+        from hipeac_agents.agents.vision_watch.nodes.digest.prompts import DIGEST_STORIES
+
+        text = " ".join(DIGEST_STORIES.split())
+        assert "the open question that moved most this week" in text
+        assert "by what they change for the answers" in text
+        assert "not by the size of the company or the money involved" in text
+        assert "A model release, a benchmark, a standard" in text
 
 
 class TestGraph:
@@ -1063,10 +1279,9 @@ class TestMessageAttribution:
                 "id": "n1",
                 "name": "Newsletter",
                 "url": "https://example.com",
-                "class": "aggregators",
+                "class": "press",
                 "region": "global",
                 "tier": 2,
-                "independence": "high",
                 "stream": "evidence",
                 "senders": ["weekly@substack.com"],
             }
@@ -1096,10 +1311,9 @@ class TestMessageAttribution:
                 "id": "n1",
                 "name": "Newsletter",
                 "url": "https://example.com",
-                "class": "aggregators",
+                "class": "press",
                 "region": "global",
                 "tier": 2,
-                "independence": "high",
                 "stream": "evidence",
                 "senders": ["weekly@substack.com"],
             }
@@ -1206,8 +1420,8 @@ class TestUrlDedupe:
         assert "aggregator version" in merged[0].corroboration
 
 
-class TestCapSourceVolume:
-    """Every source keeps its most significant developments, bounded 2-4."""
+class TestCapVolume:
+    """No source is capped on its own; a class with a weekly cap keeps its strongest findings."""
 
     @staticmethod
     def _finding(n: int, source_id: str, tier: int = 2, significance: int = 3) -> object:
@@ -1227,59 +1441,52 @@ class TestCapSourceVolume:
             significance=significance,
         )
 
-    def test_all_significant_qualifying_below_ceiling_kept(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _cap_source_volume
+    @staticmethod
+    def _catalog():
+        from hipeac_agents.agents.vision_watch.schemas import SourceCatalog
 
-        findings = [self._finding(n, "arxiv-cs-ro", significance=4) for n in range(3)]
-        kept, rejected = _cap_source_volume(findings)
+        return SourceCatalog.model_validate(
+            {
+                "classes": {
+                    "ai-news": {"about": "Curated AI-news digests.", "primary": False, "weekly_cap": 6},
+                    "press": {"about": "Journalism.", "primary": False},
+                },
+                "sources": {
+                    "ai-news": [{"id": f"digest-{n}", "url": f"https://digest-{n}.example"} for n in range(3)],
+                    "press": [{"id": f"paper-{n}", "url": f"https://paper-{n}.example"} for n in range(3)],
+                },
+            }
+        )
 
-        assert len(kept) == 3
-        assert rejected == []
+    def test_busy_week_for_ai_newsletters(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.node import cap_volume
 
-    def test_ceiling_trims_significant_overflow(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _SOURCE_KEEP_MAX, _cap_source_volume
+        findings = [self._finding(n, f"digest-{n % 3}", significance=5 if n < 2 else 3) for n in range(11)]
+        kept, rejected = cap_volume(findings, self._catalog())
 
-        findings = [self._finding(n, "arxiv-cs-ro", significance=5) for n in range(6)]
-        kept, rejected = _cap_source_volume(findings)
-
-        assert len(kept) == _SOURCE_KEEP_MAX
-        assert len(rejected) == 6 - _SOURCE_KEEP_MAX
+        assert len(kept) == 6
+        assert len(rejected) == 5
         assert {r.reason for r in rejected} == {"source_cap"}
-        assert {r.url for r in rejected}.isdisjoint({f.url for f in kept})
-        # Newest first within equal significance — deterministic.
-        assert {f.url for f in kept} == {f"https://example.com/arxiv-cs-ro-{n}" for n in range(_SOURCE_KEEP_MAX)}
+        assert all(r.detail == "class cap: kept 6 of 11 in ai-news" for r in rejected)
+        # The two significance-5 findings survive, then the newest routine ones.
+        assert {f.url for f in kept} == {f"https://example.com/digest-{n % 3}-{n}" for n in range(6)}
 
-    def test_quiet_source_falls_back_to_minimum(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _SOURCE_KEEP_MIN, _cap_source_volume
+    def test_uncapped_class(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.node import cap_volume
 
-        findings = [self._finding(n, "arxiv-cs-ro") for n in range(6)]  # all significance 3
-        kept, rejected = _cap_source_volume(findings)
+        findings = [self._finding(n, "paper-0") for n in range(9)]
+        kept, rejected = cap_volume(findings, self._catalog())
 
-        assert len(kept) == _SOURCE_KEEP_MIN
-        assert len(rejected) == 6 - _SOURCE_KEEP_MIN
-        # Fallback keeps the newest routine developments.
-        assert {f.url for f in kept} == {f"https://example.com/arxiv-cs-ro-{n}" for n in range(_SOURCE_KEEP_MIN)}
-
-    def test_significance_ranks_above_recency(self):
-        """Regression: with uniform significance 3, the fallback must keep
-        the newest, but a significant older item outranks recent routine
-        items."""
-        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _cap_source_volume
-
-        findings = [self._finding(n, "arxiv-cs-ro") for n in range(4)]
-        findings[3] = self._finding(3, "arxiv-cs-ro", significance=5)  # oldest, most significant
-        kept, _ = _cap_source_volume(findings)
-
-        assert "https://example.com/arxiv-cs-ro-3" in {f.url for f in kept}
-
-    def test_small_source_uncapped(self):
-        from hipeac_agents.agents.vision_watch.nodes.harvest.node import _cap_source_volume
-
-        findings = [self._finding(n, "darpa-news", significance=4) for n in range(4)]
-        kept, rejected = _cap_source_volume(findings)
-
-        assert len(kept) == 4
+        assert len(kept) == 9
         assert rejected == []
+
+    def test_sources_outside_the_catalog_are_not_capped(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.node import cap_volume
+
+        findings = [self._finding(n, "sweep") for n in range(8)]
+        kept, rejected = cap_volume(findings, self._catalog())
+
+        assert (len(kept), rejected) == (8, [])
 
 
 class TestResample:
@@ -1393,18 +1600,17 @@ class TestFeedChannel:
     def feed_catalog(self, data_dir):
         config = workspace.workspace_root(data_dir) / "config" / "source-catalog.yaml"
         config.write_text(
-            "meta:\n"
-            "    version: 1\n"
+            "classes:\n"
+            "    press: {about: Journalism., primary: false}\n"
             "sources:\n"
             "    - id: feed-source\n"
             "      name: Feed Source\n"
             "      url: https://example.com/site\n"
             "      feed_url: https://example.com/feed.xml\n"
-            "      class: aggregators\n"
+            "      class: press\n"
             "      themes: [physical-ai]\n"
             "      region: global\n"
             "      tier: 2\n"
-            "      independence: high\n"
             "      stream: evidence\n",
             encoding="utf-8",
         )

@@ -171,10 +171,14 @@ async def _replay_gate(
     _print_models()
     ctx = HarvestContext(load_models().small)
     themes, catalog = workspace.read_themes(), workspace.read_source_catalog()
+    # Earlier weeks as recorded, then each replayed week in turn: the
+    # duplicate check sees what a live harvest of the week would have seen.
+    prior = [file for file in workspace.read_all_findings() if file.week < first]
     results = []
     with get_usage_metadata_callback() as usage:
         for week in weeks:
-            findings_file, rejected_file, replayed = await replay.replay_week(ctx, week, themes, catalog)
+            findings_file, rejected_file, replayed = await replay.replay_week(ctx, week, themes, catalog, prior)
+            prior.append(findings_file)
             results.append((week, findings_file, rejected_file, replayed))
             print(f"  {week}: {len(findings_file.findings)} findings")
     _print_usage(usage.usage_metadata)

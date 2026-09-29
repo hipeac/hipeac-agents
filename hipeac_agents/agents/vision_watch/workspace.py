@@ -314,6 +314,15 @@ def signals_filename(week: str) -> str:
     return f"digest-{week}-signals.md"
 
 
+def ledger_filename(week: str) -> str:
+    """Return the filename of a week's ledger, kept beside its digest.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :returns: ``"digest-2026-W24-ledger.json"``.
+    """
+    return f"digest-{week}-ledger.json"
+
+
 def digest_filename(week: str) -> str:
     """Return the weekly digest filename for a week label.
 
@@ -534,6 +543,7 @@ def purge_week(week: str, keep_evidence: bool, data_dir: str | None = None) -> P
         _move(week_dir(week, data_dir), f"evidence/{week}")
     _move(weekly_digest_dir(data_dir) / digest_filename(week), f"digests/weekly/{digest_filename(week)}")
     _move(weekly_digest_dir(data_dir) / signals_filename(week), f"digests/weekly/{signals_filename(week)}")
+    _move(weekly_digest_dir(data_dir) / ledger_filename(week), f"digests/weekly/{ledger_filename(week)}")
 
     for path in sorted(clusters_dir(data_dir).glob("*-clusters.json")):
         log = schemas.ClusterLog.model_validate_json(path.read_text(encoding="utf-8"))
@@ -592,6 +602,28 @@ def write_weekly_signals(week: str, markdown: str, data_dir: str | None = None) 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(markdown, encoding="utf-8")
     return path
+
+
+def write_weekly_ledger(ledger: schemas.LedgerFile, data_dir: str | None = None) -> Path:
+    """Write a week's ledger, beside its digest (write-once, like the digest).
+
+    :param ledger: The week's ledger.
+    :param data_dir: Optional workspace-root override.
+    :returns: The written path.
+    :raises WorkspaceError: If the ledger already exists.
+    """
+    return write_once(weekly_digest_dir(data_dir) / ledger_filename(ledger.week), ledger.model_dump_json(indent=2))
+
+
+def read_weekly_ledger(week: str, data_dir: str | None = None) -> schemas.LedgerFile | None:
+    """Read a week's ledger, if its digest was composed with one.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The ledger, or ``None`` when the week has none.
+    """
+    path = weekly_digest_dir(data_dir) / ledger_filename(week)
+    return schemas.LedgerFile.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
 def _sent_marker(digest_path: Path) -> Path:
@@ -748,7 +780,9 @@ __all__ = [
     "mark_monthly_digest_sent",
     "mark_weekly_digest_sent",
     "monthly_digest_sent",
+    "ledger_filename",
     "purge_week",
+    "read_weekly_ledger",
     "monthly_digest_dir",
     "monthly_digest_filename",
     "read_all_findings",
@@ -778,5 +812,6 @@ __all__ = [
     "write_sources_file",
     "write_rejected_file",
     "write_weekly_digest",
+    "write_weekly_ledger",
     "write_weekly_signals",
 ]

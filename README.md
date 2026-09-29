@@ -17,8 +17,8 @@ The pipeline is `harvest -> health` and `cluster -> digest`, with a separate `mo
 | `harvest` | Collects from the source catalog, arXiv, the tips mailbox and a web sweep; triages and judges each candidate against the themes |
 | `health`  | Labels every source (failing, empty, stale, silent…) and emails the dev list when the picture changes                         |
 | `cluster` | Groups findings into cross-week clusters, one file per theme, append-only                                                    |
-| `digest`  | Writes the week as a few short stories per theme, with the findings linked inline, and mails it                              |
-| `monthly` | Synthesises a calendar month from the weekly evidence                                                                           |
+| `digest`  | Writes the week by theme, each story tagged with the open question it moves, and mails it                                     |
+| `monthly` | Says where each open question stands after a calendar month of weekly signals                                                  |
 
 The editorial week runs **Saturday through Friday**; a digest is labelled by the ISO week of its closing Friday, e.g. `2026-W37`. Without `--on`, a run targets the most recently closed week: on a Saturday, the week that ended the day before.
 
@@ -57,7 +57,9 @@ Useful flags:
 
 A digest composed without `--send` can be reviewed and sent later with `--send`; it is never sent twice.
 
-The weekly digest is written for the editorial board: a short bottom line, then at most two stories per theme, each a few sentences with the evidence linked inline, the board tips, and any story that newly converged. Quiet themes are named in one line. Every finding of the week is kept in the signals log beside the digest, so the digest can stay short.
+The weekly digest is written for the editorial board: a short bottom line on the open question that moved most, then per theme at most two full stories and the rest as one-line items under "Also moving", the board tips, and any story that newly converged. Each item is tagged with the open question it moves and which way (`question → lean`), or `new topic`; full stories from an emerging cluster are marked "early signal", and an item that answers a different question in a second theme is marked "also in <theme>". Quiet themes are named in one line. Every finding of the week is kept in the signals log beside the digest, and every printed item in the week's ledger.
+
+The monthly digest cuts across themes, by question. Code reads the month's ledgers and applies the evidence gate: a question qualifies with three or more signals across two or more weeks; a new topic with three signals, or two once its story is a candidate trend. One prose call then writes, per qualifying question, most evidence first, its lean, the evidence across the weeks, a draft position for the 2027 Vision and what is still open, plus the new topics with a question the board could add, and a bottom line. The digest also lists the thin evidence (questions below the gate), the questions with no evidence this month, and signals on questions since reworded.
 
 ## The data directory
 
@@ -67,7 +69,7 @@ The weekly digest is written for the editorial board: a short bottom line, then 
 config/                 themes.yaml, source-catalog.yaml (human-owned)
 evidence/<week>/        findings.json, rejected.json, grouping.json, sources.json, health.json/.md (write-once)
 clusters/               one file per theme, append-only, cross-week
-digests/weekly/         digest-YYYY-Www.md (write-once), its .sent.json marker, and -signals.md (every finding)
+digests/weekly/         digest-YYYY-Www.md (write-once), its .sent.json marker, -signals.md (every finding) and -ledger.json (every printed item)
 digests/monthly/        digest-YYYY-MM.md (write-once) and its .sent.json marker
 cache/scrapes/          content-addressed crawl cache
 cache/feed-snapshots/   the open week's feed entries, captured daily
@@ -78,16 +80,17 @@ The themes and the source catalog are **editorial input, owned by a human** — 
 
 `themes.yaml` lists the Vision's broad lines: each theme has an id, a plain-words `description`, the open `questions` the next Vision asks in it, what to `look_for` (real-world names: programmes, companies, laws — news never uses the Vision's vocabulary), optional `keywords` as hints, and a distinct `sweep_query`. An item is relevant when it is a signal inside a theme.
 
-`source-catalog.yaml` groups sources under their class, which sets their default `independence` (stories resting on low-independence sources are discounted):
+`source-catalog.yaml` declares its classes and groups sources under them. A class is a kind of voice (who is speaking), not a channel: a newsletter belongs to the class of whoever writes it. Distinct classes are what counts as independent evidence; `primary: false` marks classes that report or comment on others' news, and `weekly_cap` bounds a class's findings per week:
 
 ```yaml
 classes:
-  programmes: {independence: high}
+  programmes: {about: "Governments and public funders."}
+  ai-news: {about: "Curated AI-news digests.", primary: false, weekly_cap: 6}
 sources:
   programmes:
     - {id: uk-aria, url: https://aria.org.uk/insights}
-  preprints:
-    - {id: arxiv-cs-ar, url: https://arxiv.org/list/cs.AR/new, arxiv: cs.AR}
+  ai-news:
+    - {id: the-rundown-ai, url: https://www.therundown.ai/news, senders: [daily.therundown.ai], web: false}
 ```
 
 The channel follows from the fields: `arxiv` (API, any date range), `feed_url` (RSS/Atom), otherwise the page is scraped; `senders` adds the newsletter channel and `web: false` makes it newsletter-only; `skip: <reason>` never checks the source.
@@ -106,7 +109,7 @@ Models are configured by capability tier, shared by every agent, never by task:
 | ---------- | ------------------------- | ------------------------------------------------------------ |
 | `small`    | `gpt-6-luna` (`none`)     | harvest: triage, picks, verdicts — hundreds of calls a week  |
 | `base`     | `gpt-6-sol` (`low`)       | clustering — one call a week                                 |
-| `thinking` | `gpt-6-sol` (`low`)       | weekly digest (one call), monthly syntheses (at most 11)     |
+| `thinking` | `gpt-6-sol` (`low`)       | weekly digest (one call), monthly digest (one call)          |
 
 Each tier is set with `LLM_<TIER>_MODEL` and `LLM_<TIER>_REASONING`. An empty reasoning value sends none, for models without reasoning. `temperature=0` is sent only when reasoning is off, because reasoning models reject it otherwise.
 

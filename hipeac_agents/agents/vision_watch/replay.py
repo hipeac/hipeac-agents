@@ -180,7 +180,7 @@ def _known_page(candidate: CandidateItem) -> ScrapeResult:
 
 
 async def replay_week(
-    ctx: HarvestContext, week: str, themes: list[ThemeDef], catalog: SourceCatalog
+    ctx: HarvestContext, week: str, themes: list[ThemeDef], catalog: SourceCatalog, prior: list[FindingsFile]
 ) -> tuple[FindingsFile, RejectedFile, list[RecordedCandidate]]:
     """Run the current gate over one recorded week.
 
@@ -188,6 +188,8 @@ async def replay_week(
     :param week: The week label.
     :param themes: The themes.
     :param catalog: The source catalog.
+    :param prior: The findings of earlier weeks, for the duplicate check: a
+        page recorded in an earlier week is a duplicate, as in a live harvest.
     :returns: ``(new findings, new rejected, the replayed candidates)``.
     """
     candidates, kept_rejects = recorded_candidates(week)
@@ -209,7 +211,7 @@ async def replay_week(
                 sources.get(source_id),
                 window_start,
                 window_end,
-                [],
+                prior,
                 themes,
                 source_id,
                 "direct" if source_id in sources else NON_CATALOG.get(source_id, "sweep"),
@@ -222,7 +224,7 @@ async def replay_week(
     verified: list[Finding] = [f for findings, _ in gated for f in findings]
     rejected: list[RejectedItem] = list(kept_rejects) + [r for _, rejects in gated for r in rejects]
 
-    capped, overflow = harvest_node._cap_source_volume(verified)
+    capped, overflow = harvest_node.cap_volume(verified, catalog)
     numbered = harvest_node._assign_ids(week, harvest_node._merge_url_duplicates(capped))
     numbered, folded = await harvest_node._fold_near_matches(ctx, numbered)
     today = date.today()

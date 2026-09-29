@@ -76,6 +76,7 @@ class TestRejectedItem:
             "off_theme",
             "duplicate",
             "url_404",
+            "unresolved_link",
             "title_mismatch",
             "newsletter_mismatch",
             "board_tip_unresolved",
@@ -100,8 +101,7 @@ class TestClusterEntry:
                 "week": "2026-W01",
                 "finding_id": "f-2026-W01-03",
                 "source_id": "robot-report",
-                "source_class": "aggregators",
-                "tier": 2,
+                "source_class": "press",
                 "region": "global",
                 "date": "2026-01-13",
                 "note": "Mobileye $900M acquisition of Mentee Robotics",
@@ -109,7 +109,7 @@ class TestClusterEntry:
             }
         )
 
-        assert entry.source_class == "aggregators"
+        assert entry.source_class == "press"
         assert entry.week == "2026-W01"
 
 
@@ -120,8 +120,6 @@ class TestSourceEntry:
                 "id": "darpa-news",
                 "url": "https://www.darpa.mil/news",
                 "class": "programmes",
-                "tier": 2,
-                "independence": "high",
             }
         )
 
@@ -136,9 +134,7 @@ class TestSourceEntry:
             {
                 "id": "semianalysis",
                 "url": "https://semianalysis.com",
-                "class": "aggregators",
-                "tier": 4,
-                "independence": "low",
+                "class": "analysis",
                 "senders": ["semianalysis@substack.com"],
                 "web": False,
             }
@@ -167,19 +163,68 @@ class TestThemeDef:
         )
 
 
+class TestQuestionIds:
+    def test_question_ids(self):
+        theme = ThemeDef.model_validate(
+            {"theme": "agentic-ai", "description": "Agents.", "questions": ["Gap?", "Small models?", "Protocols?"]}
+        )
+
+        assert theme.questions_by_id == {
+            "agentic-ai.1": "Gap?",
+            "agentic-ai.2": "Small models?",
+            "agentic-ai.3": "Protocols?",
+        }
+
+
 class TestSourceCatalog:
-    def test_grouped_file_flattens_with_class_defaults(self, data_dir):
+    def test_grouped_file_flattens_under_declared_classes(self, data_dir):
         from hipeac_agents.agents.vision_watch import workspace
 
         catalog = workspace.read_source_catalog(data_dir)
         by_id = {s.id: s for s in catalog.sources}
 
         assert by_id["darpa-news"].source_class == "programmes"
-        assert by_id["darpa-news"].independence == "high"
-        assert by_id["robot-report"].independence == "high", "overrides win"
-        assert (by_id["eu-fund"].independence, by_id["eu-fund"].region) == ("low", "eu")
+        assert (by_id["eu-fund"].source_class, by_id["eu-fund"].region) == ("eu-institutions", "eu")
         assert by_id["fabricated-knowledge"].newsletter is True
+        assert catalog.class_of("robot-report") == "press"
+        assert catalog.class_of("sweep") is None
 
-    def test_source_without_class_defaults_needs_its_own_independence(self):
-        with pytest.raises(ValueError):
+    def test_class_defaults(self):
+        catalog = SourceCatalog.model_validate(
+            {
+                "classes": {"programmes": {"about": "Public funders."}},
+                "sources": {"programmes": [{"id": "darpa-news", "url": "https://www.darpa.mil/news"}]},
+            }
+        )
+        source = catalog.sources[0]
+
+        assert (source.source_class, source.region, source.name) == ("programmes", "global", "darpa-news")
+        assert catalog.is_primary("programmes")
+        assert catalog.classes["programmes"].weekly_cap is None
+
+    def test_non_primary_and_undeclared_classes(self):
+        catalog = SourceCatalog.model_validate(
+            {
+                "classes": {"ai-news": {"about": "Curated AI-news digests.", "primary": False, "weekly_cap": 6}},
+                "sources": {"ai-news": [{"id": "tldr", "url": "https://tldr.tech"}]},
+            }
+        )
+
+        assert not catalog.is_primary("ai-news")
+        assert not catalog.is_primary("unlisted"), "an undeclared class is never primary"
+        assert catalog.classes["ai-news"].weekly_cap == 6
+
+    def test_class_without_defaults_fails_naming_it(self):
+        with pytest.raises(ValueError, match="companies"):
             SourceCatalog.model_validate({"sources": {"companies": [{"id": "x", "url": "https://x"}]}})
+
+    def test_legacy_independence_is_ignored(self):
+        catalog = SourceCatalog.model_validate(
+            {
+                "classes": {"eu-institutions": {"about": "EU-level bodies.", "independence": "low"}},
+                "sources": {"eu-institutions": [{"id": "eu-fund", "url": "https://x", "independence": "high"}]},
+            }
+        )
+
+        assert catalog.sources[0].source_class == "eu-institutions"
+        assert not hasattr(catalog.sources[0], "independence")

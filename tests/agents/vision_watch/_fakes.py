@@ -39,6 +39,9 @@ class FakeLLM:
         if schema is str:
             return "In brief text."
         handler = self.handlers.get(schema)
+        if handler is None and isinstance(schema, type):
+            # Output models built per run (e.g. the monthly's narrowed ids) subclass the registered one.
+            handler = next((h for t, h in self.handlers.items() if isinstance(t, type) and issubclass(schema, t)), None)
         if handler is None and getattr(schema, "__name__", "") == "GateBatch":
             return self._batch_from_single_verdicts(schema, prompt)
         if handler is None and getattr(schema, "__name__", "") == "TriageVerdict":
@@ -149,27 +152,37 @@ def make_grouping_handler(assignments: list[dict]) -> callable:
 
 
 def make_story_handler(headline: str = "Europe builds compute") -> callable:
-    """Build a StoryDigest handler that writes one story per theme with candidates.
+    """Build a WeeklyDigest handler that writes one full story per theme with candidates.
 
-    Behaves like a well-mannered model: each story cites the first finding
-    offered under its theme, and the opener cites the first finding overall.
+    Behaves like a well-mannered model: each story takes the theme's first
+    candidate, tags it with the theme's first open question (NEW when it has
+    none) and cites its first finding; the opener cites the first finding overall.
     """
     import re
 
-    from hipeac_agents.agents.vision_watch.nodes.digest import Story, StoryDigest
+    from hipeac_agents.agents.vision_watch.nodes.digest import DigestItem, WeeklyDigest
 
     def handler(prompt: str):
-        stories, first = [], None
+        items, first = [], None
         for block in prompt.split('THEME "')[1:]:
             theme = block.split('"', 1)[0]
+            keys = re.findall(r"^(S\d+) Story", block, flags=re.M)
             refs = re.findall(r"^  - (F\d+):", block, flags=re.M)
-            if refs:
+            questions = re.findall(r"^Open question (\S+):", block, flags=re.M)
+            if keys and refs:
                 first = first or refs[0]
-                stories.append(
-                    Story(theme=theme, title=f"Story in {theme}", text=f"Something moved: [a finding]({refs[0]}).")
+                items.append(
+                    DigestItem(
+                        story=keys[0],
+                        question=questions[0] if questions else "NEW",
+                        lean="moving forward",
+                        title=f"Story in {theme}",
+                        text=f"Something moved: [a finding]({refs[0]}).",
+                        brief=False,
+                    )
                 )
         opener = f"The week's news is in one theme: [this]({first})." if first else "Nothing moved."
-        return StoryDigest(headline=headline, this_week=opener, stories=stories)
+        return WeeklyDigest(headline=headline, this_week=opener, items=items)
 
     return handler
 

@@ -1,6 +1,7 @@
 """Domain schemas for the vision-watch workspace files."""
 
 from datetime import date
+from functools import cached_property
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -12,6 +13,7 @@ RejectionReason = Literal[
     "off_theme",
     "duplicate",
     "url_404",
+    "unresolved_link",
     "title_mismatch",
     "newsletter_mismatch",
     "board_tip_unresolved",
@@ -20,22 +22,6 @@ RejectionReason = Literal[
     "undated",
     "roundup",
 ]
-SourceClass = Literal[
-    "programmes",
-    "standards",
-    "capital",
-    "conferences",
-    "ai-labs",
-    "companies",
-    "aggregators",
-    "eu-uptake",
-    "preprints",
-    "open-source",
-    "infrastructure-energy",
-    "foresight",
-    "community",
-]
-Independence = Literal["high", "med", "low"]
 Direction = Literal["strengthens", "weakens", "new"]
 Horizon = Literal["now", "1-2y", "3-5y"]
 
@@ -126,7 +112,7 @@ class ClusterEntry(BaseModel):
     week: str
     finding_id: str
     source_id: str
-    source_class: SourceClass
+    source_class: str
     region: Region
     date: date
     title: str = ""
@@ -180,6 +166,11 @@ class ThemeDef(BaseModel):
         """The name readers see: the title, or the id when no title is set."""
         return self.title or self.theme
 
+    @property
+    def questions_by_id(self) -> dict[str, str]:
+        """The open questions keyed by position: ``<theme>.1``, ``<theme>.2``, … in file order."""
+        return {f"{self.theme}.{n}": question for n, question in enumerate(self.questions, 1)}
+
     def outline(self) -> str:
         """Render the theme in one short line, for screening calls that see many items.
 
@@ -203,10 +194,40 @@ class ThemeDef(BaseModel):
         return " ".join(parts)
 
 
-class ClassDefaults(BaseModel):
-    """Per-class defaults in the catalog: a source inherits them unless it overrides."""
+class LedgerEntry(BaseModel):
+    """One printed digest item: which open question a story moved, and which way."""
 
-    independence: Independence
+    question_id: str
+    question: str = ""
+    lean: str
+    theme: str
+    cluster_id: str
+    status: str
+    early: bool
+    finding_ids: list[str] = []
+    title: str
+    text: str
+
+
+class LedgerFile(BaseModel):
+    """A week's ledger (``digests/weekly/digest-<week>-ledger.json``), written with its digest."""
+
+    week: str
+    created: date
+    entries: list[LedgerEntry] = []
+
+
+class SourceClassDef(BaseModel):
+    """One source class declared in the catalog: a kind of voice, not a channel.
+
+    ``primary: false`` marks a class that reports or comments on others' news
+    rather than announcing its own; ``weekly_cap`` bounds the class's findings
+    per week, all its sources together.
+    """
+
+    about: str
+    primary: bool = True
+    weekly_cap: int | None = None
 
 
 class SourceEntry(BaseModel):
@@ -226,9 +247,8 @@ class SourceEntry(BaseModel):
     name: str = ""
     feed_url: str | None = None
     arxiv: str | None = None
-    source_class: SourceClass = Field(alias="class")
+    source_class: str = Field(alias="class")
     region: Region = "global"
-    independence: Independence
     senders: list[str] = []
     web: bool = True
     skip: str | None = None
@@ -247,11 +267,12 @@ class SourceEntry(BaseModel):
 class SourceCatalog(BaseModel):
     """The parsed ``source-catalog.yaml`` document.
 
-    On disk, sources are grouped under their class and inherit that class's
-    ``classes`` defaults (independence); in memory they are one flat list.
+    On disk, sources are grouped under their class and every class is declared
+    in ``classes``; in memory the sources are one flat list. Legacy
+    ``independence`` keys, per class or per source, are ignored.
     """
 
-    classes: dict[SourceClass, ClassDefaults] = {}
+    classes: dict[str, SourceClassDef] = {}
     sources: list[SourceEntry]
 
     @model_validator(mode="before")
@@ -259,10 +280,37 @@ class SourceCatalog(BaseModel):
     def _flatten_groups(cls, data: Any) -> Any:
         if not isinstance(data, dict) or not isinstance(data.get("sources"), dict):
             return data
-        defaults = data.get("classes") or {}
         flat = [
-            {**(defaults.get(source_class) or {}), "class": source_class, **entry}
+            {**entry, "class": source_class}
             for source_class, entries in data["sources"].items()
             for entry in entries or []
         ]
         return {**data, "sources": flat}
+
+    @model_validator(mode="after")
+    def _classes_declared(self) -> SourceCatalog:
+        undeclared = sorted({s.source_class for s in self.sources} - set(self.classes))
+        if undeclared:
+            raise ValueError(f"source classes not declared in `classes`: {', '.join(undeclared)}")
+        return self
+
+    def class_of(self, source_id: str) -> str | None:
+        """Look up a source's class.
+
+        :param source_id: The source id.
+        :returns: The class, or ``None`` when the source is not in the catalog.
+        """
+        return self._class_by_id.get(source_id)
+
+    @cached_property
+    def _class_by_id(self) -> dict[str, str]:
+        return {source.id: source.source_class for source in self.sources}
+
+    def is_primary(self, source_class: str) -> bool:
+        """Whether a class announces its own news; undeclared classes never do.
+
+        :param source_class: The class name.
+        :returns: ``True`` for a declared primary class.
+        """
+        declared = self.classes.get(source_class)
+        return declared is not None and declared.primary

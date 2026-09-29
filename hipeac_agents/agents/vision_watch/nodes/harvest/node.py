@@ -17,6 +17,7 @@ from hipeac_agents.agents.vision_watch.schemas import (
     FindingsFile,
     RejectedFile,
     RejectedItem,
+    SourceCatalog,
     SourceReport,
     SourcesFile,
 )
@@ -199,7 +200,7 @@ async def harvest_node(
         )
 
     # Integration: URL dedupe, near-match fold, re-sample, write.
-    capped, capped_rejects = _cap_source_volume(verified)
+    capped, capped_rejects = cap_volume(verified, catalog)
 
     merged = _merge_url_duplicates(capped)
     numbered = _assign_ids(state.week, merged)
@@ -272,71 +273,56 @@ def _join_corroboration(*parts: str | None) -> str | None:
     return "; ".join(filter(None, parts)) or None
 
 
-# Weekly bounds on recorded findings per source, one criterion for every
-# source. High-volume feeds (arXiv category feeds, aggregators, newsletters)
-# can pass dozens of in-window candidates a day — every one trivially
-# on-theme by title and abstract — which floods clusters and inflates the
-# finding counts the trend thresholds rely on. Each source keeps its gate
-# call's genuinely significant developments, bounded 2-4, audited otherwise.
-_SOURCE_KEEP_MIN = 2
-_SOURCE_KEEP_MAX = 4
-_SOURCE_SIGNIFICANCE_FLOOR = 4
+def _cap_reject(finding: Finding, detail: str) -> RejectedItem:
+    """Record a finding dropped by a volume cap in the rejected audit.
+
+    :param finding: The dropped finding.
+    :param detail: Which cap dropped it.
+    :returns: The ``source_cap`` rejected item.
+    """
+    return RejectedItem(
+        url=finding.url,
+        claimed_title=finding.title,
+        source_id=finding.source_id,
+        reason="source_cap",
+        detail=detail,
+        summary=finding.summary,
+    )
 
 
-def _cap_source_volume(
-    findings: list[Finding],
-) -> tuple[list[Finding], list[RejectedItem]]:
-    """Cap every source at its most significant findings of the week.
+def cap_volume(findings: list[Finding], catalog: SourceCatalog) -> tuple[list[Finding], list[RejectedItem]]:
+    """Cap every class that sets a ``weekly_cap`` at its strongest findings of the week.
 
-    A source keeps every development the gate call scored
-    ``significance >= 4``, bounded to 2-4 per source: fewer than the floor
-    qualifying keeps the top ranked developments anyway (a quiet week still
-    records something), more than the ceiling trims to the strongest.
-    Selection is deterministic over a judgement recorded once at gate time;
-    the dropped developments move to the rejected audit with reason
-    ``source_cap``, so nothing is lost silently.
+    A source is not capped on its own: its volume is bounded before the
+    verdict (the pick of its most notable candidates), and a finding that
+    passed the verdict is evidence. A class of many sources — the AI-news
+    digests — is limited as a group, ranked by significance, then recency.
+    The overflow moves to the rejected audit as ``source_cap`` with a detail
+    naming the class cap.
 
     :param findings: The verified findings from all channels.
+    :param catalog: The source catalog, for each source's class and the class caps.
     :returns: ``(capped findings, rejected overflow items)``.
     """
-    capped: list[Finding] = []
-    overflow: list[RejectedItem] = []
-
-    by_source: dict[str, list[Finding]] = {}
+    by_class: dict[str, list[Finding]] = {}
     for finding in findings:
-        by_source.setdefault(finding.source_id, []).append(finding)
+        source_class = catalog.class_of(finding.source_id) or ""
+        declared = catalog.classes.get(source_class)
+        if declared is not None and declared.weekly_cap is not None:
+            by_class.setdefault(source_class, []).append(finding)
 
-    for group in by_source.values():
-        if len(group) <= _SOURCE_KEEP_MAX:
-            capped.extend(group)
+    dropped: set[str] = set()
+    overflow: list[RejectedItem] = []
+    for source_class, group in by_class.items():
+        cap = catalog.classes[source_class].weekly_cap
+        if len(group) <= cap:
             continue
-
         group.sort(key=lambda f: (-f.significance, -f.date.toordinal()))
-        keep = [f for f in group if f.significance >= _SOURCE_SIGNIFICANCE_FLOOR]
-        if len(keep) < _SOURCE_KEEP_MIN:
-            keep = group[:_SOURCE_KEEP_MIN]
-        keep = keep[:_SOURCE_KEEP_MAX]
-        capped.extend(keep)
+        for finding in group[cap:]:
+            dropped.add(finding.url)
+            overflow.append(_cap_reject(finding, f"class cap: kept {cap} of {len(group)} in {source_class}"))
 
-        kept_urls = {f.url for f in keep}
-        for finding in group:
-            if finding.url not in kept_urls:
-                overflow.append(
-                    RejectedItem(
-                        url=finding.url,
-                        claimed_title=finding.title,
-                        source_id=finding.source_id,
-                        reason="source_cap",
-                        detail=(
-                            f"source volume cap: kept {len(keep)} of {len(group)} "
-                            f"(significance floor {_SOURCE_SIGNIFICANCE_FLOOR}, "
-                            f"bounded {_SOURCE_KEEP_MIN}-{_SOURCE_KEEP_MAX})"
-                        ),
-                        summary=finding.summary,
-                    )
-                )
-
-    return capped, overflow
+    return [finding for finding in findings if finding.url not in dropped], overflow
 
 
 def _merge_url_duplicates(findings: list[Finding]) -> list[Finding]:
