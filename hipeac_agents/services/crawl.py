@@ -57,8 +57,12 @@ def _page_title(document: Any) -> str:
 
 
 def _page_url(document: Any) -> str:
+    # ``url`` is where the scrape ended, after redirects; ``source_url`` is
+    # only what was asked for — a newsletter's tracker, when that was the link.
     metadata = getattr(document, "metadata", None)
-    return (getattr(metadata, "sourceURL", None) or getattr(metadata, "url", "") or "") if metadata else ""
+    if not metadata:
+        return ""
+    return getattr(metadata, "url", None) or getattr(metadata, "source_url", None) or ""
 
 
 def _page_published_at(document: Any) -> str | None:

@@ -268,3 +268,134 @@ class TestFewerCalls:
         prompt = llm.calls[0][1]
         assert themes[0].outline() in prompt
         assert "Open questions" not in prompt
+
+
+class TestNewsletterLinks:
+    """Regression: newsletter click-trackers (Brevo, Substack redirects, web views) were recorded as
+    findings' links and reached the digests; 41 of 844 findings over W26-W39."""
+
+    TRACKER = "https://4ntll.r.sp1-brevo.net/mk/cl/f/sh/abc/def"
+
+    async def test_tracker_is_followed_and_the_story_recorded(self, themes, monkeypatch):
+        story = "https://example.com/story?utm_source=substack&utm_medium=email"
+        monkeypatch.setattr(channels, "resolve_link", lambda url: story)
+        crawl = FakeCrawl(pages={story: ("Item 0", "t")})
+
+        findings, rejected = await _gate(
+            FakeLLM({GateVerdict: _verdict()}), crawl, [_candidate(0, url=self.TRACKER)], themes, triaged=True
+        )
+
+        assert [f.url for f in findings] == ["https://example.com/story"]
+        assert rejected == []
+        assert crawl.scrape_calls == [story]
+
+    async def test_tracker_that_resolves_nowhere_is_rejected(self, themes, monkeypatch):
+        monkeypatch.setattr(channels, "resolve_link", lambda url: url)
+        crawl = FakeCrawl(pages={self.TRACKER: ("Newsletter", "t")})
+
+        findings, rejected = await _gate(
+            FakeLLM({GateVerdict: _verdict()}), crawl, [_candidate(0, url=self.TRACKER)], themes, triaged=True
+        )
+
+        assert findings == []
+        assert [(r.reason, r.detail) for r in rejected] == [("unresolved_link", f"ends on {self.TRACKER}")]
+
+    async def test_page_ending_on_an_error_page_is_rejected(self, themes):
+        crawl = FakeCrawl()
+
+        async def scrape(url, fresh=False):
+            from hipeac_agents.services.types import ScrapeResult
+
+            return ScrapeResult(url="https://finance.yahoo.com/?err=404", title="Yahoo Finance", markdown="t")
+
+        crawl.scrape = scrape
+        findings, rejected = await _gate(
+            FakeLLM({GateVerdict: _verdict()}), crawl, [_candidate(0)], themes, triaged=True
+        )
+
+        assert findings == []
+        assert rejected[0].reason == "unresolved_link"
+
+
+class TestResolveLink:
+    """``resolve_link`` against a faked ``urlopen``: no network."""
+
+    class _Response:
+        def __init__(self, url: str, body: str = ""):
+            self.url, self.body = url, body
+
+        def geturl(self):
+            return self.url
+
+        def read(self, _size):
+            return self.body.encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def _serve(self, monkeypatch, routes: dict):
+        import urllib.request
+
+        def urlopen(request, timeout):
+            answer = routes[request.full_url]
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+
+    def test_http_redirect(self, monkeypatch):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.gates import resolve_link
+
+        self._serve(monkeypatch, {"https://substack.com/redirect/a": self._Response("https://example.com/story")})
+
+        assert resolve_link("https://substack.com/redirect/a") == "https://example.com/story"
+
+    def test_meta_refresh_on_the_trackers_page(self, monkeypatch):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.gates import resolve_link
+
+        tracker = "https://4ntll.r.sp1-brevo.net/mk/cl/f/sh/a/b"
+        page = '<noscript><meta http-equiv="refresh" content="0.0;https://example.com/story"></noscript>'
+        self._serve(
+            monkeypatch,
+            {
+                tracker: self._Response(tracker, page),
+                "https://example.com/story": self._Response("https://example.com/story"),
+            },
+        )
+
+        assert resolve_link(tracker) == "https://example.com/story"
+
+    def test_tracker_leading_to_a_google_redirect(self, monkeypatch):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.gates import resolve_link
+
+        google = "https://www.google.com/url?q=https%3A%2F%2Fexample.com%2Fstory&sa=D"
+        self._serve(
+            monkeypatch,
+            {
+                "https://substack.com/redirect/a": self._Response(google),
+                "https://example.com/story": self._Response("https://example.com/story"),
+            },
+        )
+
+        assert resolve_link("https://substack.com/redirect/a") == "https://example.com/story"
+
+    def test_blocked_destination_still_names_its_url(self, monkeypatch):
+        import urllib.error
+
+        from hipeac_agents.agents.vision_watch.nodes.harvest.gates import resolve_link
+
+        blocked = urllib.error.HTTPError("https://news.example.com/story", 403, "Forbidden", {}, None)
+        self._serve(monkeypatch, {"https://t.e2ma.net/click/a": blocked})
+
+        assert resolve_link("https://t.e2ma.net/click/a") == "https://news.example.com/story"
+
+    def test_network_failure_keeps_the_link(self, monkeypatch):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.gates import resolve_link
+
+        self._serve(monkeypatch, {"https://substack.com/redirect/a": TimeoutError()})
+
+        assert resolve_link("https://substack.com/redirect/a") == "https://substack.com/redirect/a"

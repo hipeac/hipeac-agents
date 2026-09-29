@@ -29,10 +29,12 @@ class FakeFirecrawlSdk:
         return self.search_data
 
 
-def fake_document(markdown="# Title\n\nBody text.", title="Example headline", url="https://example.com/a"):
+def fake_document(
+    markdown="# Title\n\nBody text.", title="Example headline", url="https://example.com/a", source_url=None
+):
     return SimpleNamespace(
         markdown=markdown,
-        metadata=SimpleNamespace(title=title, sourceURL=url, statusCode=200),
+        metadata=SimpleNamespace(title=title, url=url, source_url=source_url or url, statusCode=200),
     )
 
 
@@ -48,6 +50,15 @@ class TestFirecrawlScrape:
         assert "Body text." in result.markdown
         assert result.status_code == 200
         assert sdk.scrape_calls[0][1]["formats"] == ["markdown"]
+
+    async def test_scrape_records_where_redirects_ended(self):
+        """Regression: the requested URL (a newsletter's tracker) was recorded instead of the page reached."""
+        document = fake_document(url="https://example.com/story", source_url="https://substack.com/redirect/abc")
+        crawl = FirecrawlCrawl(FakeFirecrawlSdk(document=document))
+
+        result = await crawl.scrape("https://substack.com/redirect/abc")
+
+        assert result.url == "https://example.com/story"
 
     async def test_scrape_failure_returns_none(self):
         crawl = FirecrawlCrawl(FakeFirecrawlSdk(error=RuntimeError("boom")))

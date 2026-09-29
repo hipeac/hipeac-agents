@@ -5,6 +5,7 @@ board tips, and the general sweep (one date-bounded web search per theme).
 The gate (``gate_candidates``) is shared by all of them.
 """
 
+import asyncio
 import logging
 import re
 from datetime import UTC, date, datetime, time, timedelta
@@ -17,7 +18,7 @@ from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, Rej
 from hipeac_agents.agents.vision_watch.state import SourceOutcome
 from hipeac_agents.services.factory import Services
 from hipeac_agents.services.types import ScrapeResult
-from hipeac_agents.services.urls import normalize_url
+from hipeac_agents.services.urls import is_link_wrapper, is_story_url, normalize_url, strip_tracking
 
 from .context import HarvestContext
 from .gates import (
@@ -26,6 +27,7 @@ from .gates import (
     headline_in_body,
     http_url_is_dead,
     parse_iso_date,
+    resolve_link,
     window_gate,
 )
 from .models import CandidateItem
@@ -210,6 +212,11 @@ async def _prepare_candidate(
     """
     item_date = parse_iso_date(candidate.date) or parse_iso_date(candidate.summary)
 
+    # A newsletter's link is usually its click-tracker: follow it first, so
+    # the story's own page is checked, scraped and recorded.
+    if known_page is None and is_link_wrapper(candidate.url):
+        candidate = candidate.model_copy(update={"url": await asyncio.to_thread(resolve_link, candidate.url)})
+
     if known_page is None and http_url_is_dead(candidate.url):
         return None, _reject(candidate, source_id, "url_404")
 
@@ -217,6 +224,9 @@ async def _prepare_candidate(
 
     if page is None:
         return None, _reject(candidate, source_id, "url_404")
+
+    if not is_story_url(page.url or candidate.url):
+        return None, _reject(candidate, source_id, "unresolved_link", f"ends on {page.url or candidate.url}")
 
     if item_date is None:
         item_date = parse_iso_date(page.published_at or "")
@@ -264,7 +274,7 @@ def _judged(
             id="",
             date=item_date or window_end,
             title=candidate.title,
-            url=page.url or candidate.url,
+            url=strip_tracking(page.url or candidate.url),
             source_id=source_id,
             region=source.region if source else "global",
             theme_ids=theme_ids,
