@@ -8,7 +8,7 @@ from typing import Any
 
 from hipeac_agents.agents.vision_watch import settings as watch_settings
 from hipeac_agents.agents.vision_watch import workspace
-from hipeac_agents.agents.vision_watch.cadence import weekly_label
+from hipeac_agents.agents.vision_watch.cadence import last_closed_window, week_window, weekly_label
 from hipeac_agents.agents.vision_watch.nodes.digest.node import NEW_TOPIC, resolve_citations
 from hipeac_agents.agents.vision_watch.schemas import LedgerEntry, LedgerFile, ThemeDef
 from hipeac_agents.services.factory import Services
@@ -54,6 +54,33 @@ def month_weeks(month: str) -> set[str]:
         thursday += timedelta(days=7)
 
     return weeks
+
+
+def month_is_complete(month: str, today: date) -> bool:
+    """Tell whether every week of a month has closed.
+
+    :param month: A calendar month as ``"YYYY-MM"``.
+    :param today: The day of the run.
+    :returns: ``True`` once the month's last week has closed.
+    """
+    return week_window(max(month_weeks(month)))[1] < today
+
+
+def last_complete_month(today: date) -> str:
+    """Return the latest month whose weeks have all closed.
+
+    The last closed week ends its month when the next week's Thursday is in
+    another month; otherwise its month is still running and the month before
+    is the latest complete one.
+
+    :param today: The day of the run.
+    :returns: A calendar month as ``"YYYY-MM"``, e.g. ``"2026-09"`` on 5 October 2026.
+    """
+    monday, _sunday = last_closed_window(today)
+    thursday = monday + timedelta(days=3)
+    if (thursday + timedelta(days=7)).month == thursday.month:
+        thursday = thursday.replace(day=1) - timedelta(days=1)
+    return f"{thursday.year}-{thursday.month:02d}"
 
 
 @dataclass(frozen=True)

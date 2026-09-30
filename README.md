@@ -37,14 +37,14 @@ Every command goes through the `./run` wrapper, which loads `.env` and invokes `
 ```sh
 ./run python -m hipeac_agents weekly-harvest            # Monday early morning, for the week to Sunday
 ./run python -m hipeac_agents weekly-digest             # right after the harvest
-./run python -m hipeac_agents monthly-digest --month 2026-08   # once the month's last week has closed
+./run python -m hipeac_agents monthly-digest            # the latest complete month; skips one already composed
 ./run python -m hipeac_agents snapshot-feeds            # daily, so busy feeds keep their whole week
 ```
 
-A crontab for the weekly job, Monday at 05:00, and the daily snapshots:
+The Monday job harvests the week that ended on Sunday, composes its digest, then composes the monthly digest when a month has just completed; on other Mondays the monthly step finds its month already composed and does nothing. A month is complete once its last week has closed, so it is composed on the first Monday of the next month at the latest. `--month 2026-08` composes a given month, and is refused while it still has a week open. A crontab, with sending on:
 
 ```
-0 5 * * 1   cd /path/to/hipeac-agents && ./run python -m hipeac_agents weekly-harvest && ./run python -m hipeac_agents weekly-digest
+0 5 * * 1   cd /path/to/hipeac-agents && ./run python -m hipeac_agents weekly-harvest && ./run python -m hipeac_agents weekly-digest --send && ./run python -m hipeac_agents monthly-digest --send
 30 22 * * * cd /path/to/hipeac-agents && ./run python -m hipeac_agents snapshot-feeds
 ```
 

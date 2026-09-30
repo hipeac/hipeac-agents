@@ -60,6 +60,26 @@ class TestWeeklyDigest:
         assert fake_graph[0][0] == ["cluster", "digest"]
 
 
+class TestMonthlyDigest:
+    async def test_monthly_without_a_month(self, monkeypatch, fake_graph):
+        """Monday run without a month: 5 October 2026 targets September, whose last week closed on 27 September."""
+        _freeze_today(monkeypatch, date(2026, 10, 5))
+
+        exit_code = await cli.main(["monthly-digest"])
+
+        assert exit_code == 0
+        assert fake_graph[0][0] == ["monthly"]
+
+    async def test_month_not_complete(self, monkeypatch, fake_graph, capsys):
+        _freeze_today(monkeypatch, date(2026, 10, 5))
+
+        exit_code = await cli.main(["monthly-digest", "--month", "2026-10"])
+
+        assert exit_code == 2
+        assert fake_graph == []
+        assert "2026-10 still has a week open" in capsys.readouterr().err
+
+
 class TestInitialState:
     def test_state_carries_the_window(self):
         state = cli._initial_state("2026-W39", (date(2026, 9, 21), date(2026, 9, 27)))

@@ -86,6 +86,28 @@ def _recurring(question_id: str, weeks: tuple[str, ...] = ("2026-W36", "2026-W36
     return [(week, _entry(question_id, **kwargs)) for week in weeks]
 
 
+class TestLastCompleteMonth:
+    @pytest.mark.parametrize(
+        ("today", "expected"),
+        [
+            (date(2026, 10, 5), "2026-09"),  # Monday after W40: September ended with W39
+            (date(2026, 9, 28), "2026-09"),  # Monday after W39, the last week of September
+            (date(2026, 8, 3), "2026-07"),  # Monday after W31, 27 July - 2 August
+            (date(2026, 8, 1), "2026-06"),  # Saturday: W31 still open, so July is not complete
+            (date(2026, 7, 27), "2026-06"),  # Monday after W30: July still has W31 to come
+            (date(2027, 1, 4), "2026-12"),  # Monday after W53, 28 December - 3 January
+        ],
+    )
+    def test_monday_run_without_a_month(self, today, expected):
+        assert monthly_node_mod.last_complete_month(today) == expected
+
+    def test_month_not_complete(self):
+        """W44 (26 October - 1 November) is October's last week."""
+        assert not monthly_node_mod.month_is_complete("2026-10", date(2026, 10, 5))
+        assert not monthly_node_mod.month_is_complete("2026-10", date(2026, 11, 1))
+        assert monthly_node_mod.month_is_complete("2026-10", date(2026, 11, 2))
+
+
 class TestEvidenceGate:
     def test_three_signals_in_two_weeks_qualify(self):
         gate = evidence_gate(_month(*_recurring("physical-ai.1", early=True)), THEMES)

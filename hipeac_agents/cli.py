@@ -4,7 +4,7 @@ Usage::
 
     ./run python -m hipeac_agents weekly-harvest [--redo]     # Monday early morning, for the week to Sunday
     ./run python -m hipeac_agents weekly-digest [--send] [--redo]  # right after the harvest
-    ./run python -m hipeac_agents monthly-digest --month 2026-07 [--send]
+    ./run python -m hipeac_agents monthly-digest [--month 2026-07] [--send]  # default: the latest complete month
     ./run python -m hipeac_agents simulate-harvest --on 2026-06-24 [--limit 4] [--skip-sweep]
     ./run python -m hipeac_agents snapshot-feeds        # daily: keep busy feeds' whole week
     ./run python -m hipeac_agents replay-gate --from 2026-W26 --to 2026-W39 [--dry-run]
@@ -358,7 +358,9 @@ async def main(argv: list[str] | None = None) -> int:
         ],
     )
     parser.add_argument("--on", help="harvest / weekly-digest: run for the week containing this ISO date")
-    parser.add_argument("--month", help="monthly-digest: calendar month to synthesise, e.g. 2026-07")
+    parser.add_argument(
+        "--month", help="monthly-digest: calendar month to synthesise, e.g. 2026-07 (default: the latest complete one)"
+    )
     parser.add_argument("--from", dest="first", help="replay-gate: first week label, e.g. 2026-W26")
     parser.add_argument("--to", dest="last", help="replay-gate: last week label, e.g. 2026-W39")
     parser.add_argument("--dry-run", action="store_true", help="replay-gate: only print the planned judgement calls")
@@ -422,14 +424,17 @@ async def main(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "monthly-digest":
-        if not args.month:
-            parser.error("monthly-digest requires --month YYYY-MM (e.g. --month 2026-07)")
+        from hipeac_agents.agents.vision_watch.nodes.monthly.node import last_complete_month, month_is_complete
+
+        month = args.month or last_complete_month(date.today())
+        if not month_is_complete(month, date.today()):
+            print(f"refusing to run: {month} still has a week open", file=sys.stderr)
             return 2
         return await _run(
             ["monthly"],
             data_dir=args.data_dir,
             send=args.send,
-            month=args.month,
+            month=month,
         )
 
     return 2
