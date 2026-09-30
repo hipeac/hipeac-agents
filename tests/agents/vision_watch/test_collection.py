@@ -127,6 +127,7 @@ class TestArxiv:
 
     async def test_unreachable_listing_is_flagged(self, themes, monkeypatch):
         monkeypatch.setattr(channels, "ARXIV_PAUSE_SECONDS", 0)
+        monkeypatch.setattr(channels, "ARXIV_RETRY_SECONDS", (0, 0))
         source = _source(id="arxiv-cs-ar", arxiv="cs.AR")
 
         _, _, outcome = await channels.harvest_arxiv_source(
@@ -141,6 +142,7 @@ class TestArxiv:
         import asyncio
 
         monkeypatch.setattr(channels, "ARXIV_PAUSE_SECONDS", 0)
+        monkeypatch.setattr(channels, "ARXIV_RETRY_SECONDS", (0, 0))
         in_flight, peak = 0, 0
 
         class CountingCrawl(FakeCrawl):
@@ -161,6 +163,29 @@ class TestArxiv:
         )
 
         assert peak == 1
+
+    async def test_refused_listing_is_retried(self, themes, monkeypatch):
+        """Regression: after two categories arXiv refused the rest for a while, and each failed at once (W39)."""
+        monkeypatch.setattr(channels, "ARXIV_PAUSE_SECONDS", 0)
+        monkeypatch.setattr(channels, "ARXIV_RETRY_SECONDS", (0, 0))
+        attempts = []
+
+        class RefusingOnceCrawl(FakeCrawl):
+            async def fetch_feed(self, url):
+                attempts.append(url)
+                return None if len(attempts) == 1 else "<html></html>"
+
+        _, _, outcome = await channels.harvest_arxiv_source(
+            HarvestContext(FakeLLM()),
+            Services(crawl=RefusingOnceCrawl(), mail=None, vision=None),
+            _source(id="arxiv-cs-ar", arxiv="cs.AR"),
+            *WINDOW,
+            [],
+            themes,
+        )
+
+        assert len(attempts) == 2
+        assert outcome.status != "failed"
 
 
 async def _no_sleep(_seconds):

@@ -500,8 +500,10 @@ async def harvest_feed_source(
 
 
 ARXIV_LISTING = "https://arxiv.org/list/{category}/pastweek?show=2000"
-# arXiv asks for no more than one request every 3 seconds.
+# arXiv asks for no more than one request every 3 seconds, and after a burst
+# refuses a client for a while: a failed fetch waits longer before each retry.
 ARXIV_PAUSE_SECONDS = 3.0
+ARXIV_RETRY_SECONDS = (30.0, 60.0)
 # Papers per category that reach the full verdict each week: busy categories
 # announce hundreds, nearly all incremental; the source cap keeps 4 of these.
 ARXIV_WEEKLY_PICK = 8
@@ -560,13 +562,22 @@ def parse_arxiv_abstract(html: str) -> str:
 async def _fetch_arxiv(ctx: HarvestContext, services: Services, url: str) -> str | None:
     """Fetch one arXiv page, one request at a time across the run and ``ARXIV_PAUSE_SECONDS`` apart.
 
+    A failed fetch is retried after each of ``ARXIV_RETRY_SECONDS``, holding
+    the slot so the other categories wait too.
+
     :param ctx: The harvest context, holding the run's arXiv slot.
     :param services: The wired service clients.
     :param url: The listing or abstract URL.
-    :returns: The page, or ``None`` when the fetch fails.
+    :returns: The page, or ``None`` when every attempt fails.
     """
     async with ctx.arxiv_slot:
         page = await services.crawl.fetch_feed(url)
+        for wait in ARXIV_RETRY_SECONDS:
+            if page is not None:
+                break
+            logger.info("arXiv refused %s; retrying in %ss", url, wait)
+            await asyncio.sleep(wait)
+            page = await services.crawl.fetch_feed(url)
         await asyncio.sleep(ARXIV_PAUSE_SECONDS)
     return page
 
