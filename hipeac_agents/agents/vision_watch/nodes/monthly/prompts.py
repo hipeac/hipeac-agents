@@ -1,34 +1,44 @@
-"""Prompts for the monthly digest node's LLM judgement calls."""
+"""The monthly digest node's judgement-call prompt."""
 
-MONTHLY_TREND = """\
-You are writing one cluster's monthly synthesis for the HiPEAC Vision Watch
-digest. The system informs and recommends; the board decides. Cover, in this
-order: name the trend in plain language; summarise the evidence so far,
-referencing the strongest sources and any notable figures by name; a "why it
-matters" sentence; confidence (how sure, backed by the tally) and likelihood
-(how likely it keeps developing) in SEPARATE sentences; the European stake
-tagged GAP, OPPORTUNITY, or DEPENDENCY; and a recommendation.
+MONTHLY_QUESTIONS = """\
+You write the monthly HiPEAC Vision Watch for the editorial board writing the
+HiPEAC Vision 2027 around its open questions. The weekly digests told the
+board which way each week's evidence pushed; this month's digest says where
+each question now stands, so the board can start drafting positions.
 
-Recommendation bar: "adopt into the Vision's thinking" is reserved for
-clusters that have crossed the candidate-trend threshold (4+ findings, 3+
-source classes, 3+ weeks, with tier-1 or tier-2 evidence). Everything below
-the threshold gets "keep watching" unless the evidence actively argues for
-dropping it ("let go"). Do not inflate: a two-finding cluster is not a Vision
-candidate yet, however interesting.
+Below are the open questions with enough evidence this month, each with its
+id, its line of the Vision and its signals from the weekly digests (week,
+evidence status, lean, text with findings F1, F2, ...). Then the new topics
+(T1, T2, ...) that kept coming up outside the open questions. Signal and week
+counts are printed next to your answers by code; do not repeat them.
 
-If the cluster's sources are mostly low-independence (e.g. EU-only), say so:
-uptake is real but it is Europe agreeing with itself, not proven momentum.
+Write:
+- answers: one per question below, by id. lean: which way the month's
+  evidence pushes the answer, 2-5 words. evidence: what the signals show
+  together, as one argument, not a week-by-week list; name a week (W36)
+  only when the order matters. Say what happened, not what it fails to
+  prove. for_2027: a position the 2027 Vision could take, as a draft for
+  the board. still_open: the one thing the board would most need to know
+  next, stated directly ("Whether humanoid fleets pay for themselves").
+  The limits of the evidence go in still_open only, once.
+- new_topics: one per topic below, by key, with a question the board could
+  add to the Vision's open questions. title in sentence case. When a
+  topic's signals do not share one development, leave it out.
+- bottom_line: 2-3 sentences: the most settled answers and the biggest
+  surprise. Name the questions in plain words.
 
-Write plain sentences: no markdown formatting, no asterisks, no links. Never
-invent a number, source, or date; every claim traces to the entries given.
-One judgement per sentence — no "could potentially", no "time will tell".
-"""
-
-MONTHLY_BOTTOM_LINE = """\
-You are writing the "Bottom line" section (~150 words) of a HiPEAC Vision
-Watch monthly digest. State the month's headline judgement: which
-developments moved, which clusters are converging, and what the board might
-consider for the Vision. Guidance, not commitment — recommend, don't decide.
-Not everything is urgent; quiet months are honest. Plain sentences, no
-markdown formatting.
+House style:
+- Plain, concise English. No hype. The system informs; the board decides.
+- No contrasts or disclaimers: never "rather than", "not yet", "does not
+  establish", "without demonstrating", "remains unproven". The weeks, the
+  signal counts and the evidence status already tell the board how settled
+  an answer is.
+- Weigh signals by what they change for the answers, not by the size of the
+  company or the money involved. A signal from an early (emerging) story
+  counts for less than one from a strengthening story or candidate trend.
+- Mention Europe only when the evidence is about Europe's position.
+- Put each citation on the short phrase (3-8 words) that states the fact, by
+  finding id: "[raised €115M for AI chips](F12)". Never write a URL. Never
+  invent a number, source or date; every claim traces to the signals given.
+- No bullet lists or labels inside texts.
 """

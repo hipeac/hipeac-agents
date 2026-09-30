@@ -4,14 +4,39 @@ from datetime import date
 from typing import Any
 
 from hipeac_agents.agents.vision_watch import schemas, workspace
-from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterLog, Finding, SourceClass
+from hipeac_agents.agents.vision_watch.cadence import weeks_before
+from hipeac_agents.agents.vision_watch.schemas import Cluster, ClusterLog, Finding
 from hipeac_agents.agents.vision_watch.state import ClusterReport, VisionWatchState
+from hipeac_agents.agents.vision_watch.workspace import ClusterExistsError, EntryAlreadyRecordedError
 from hipeac_agents.services.factory import Services
-from hipeac_agents.storage import WorkspaceError
 
 from .models import GroupingPlan
 from .prompts import GROUPING_BAR
-from .tallies import is_candidate_trend, sort_ranked, trend_status
+from .tallies import UNLISTED_CLASS, is_candidate_trend, log_with_current_classes, sort_ranked, trend_status
+
+
+# Clusters seen within this many weeks are shown to the grouping call with
+# their recent notes; older ones by id and name only, so the prompt stops
+# growing with history while old stories can still be extended.
+RECENT_WEEKS = 8
+
+
+def cluster_index_text(cluster_index: dict[str, tuple[str, schemas.Cluster]], week: str) -> str:
+    """Render the existing clusters for the grouping call, compact for old ones.
+
+    :param cluster_index: Cluster id to ``(theme, cluster)`` across all themes.
+    :param week: The week being grouped.
+    :returns: One line per cluster.
+    """
+    cutoff = weeks_before(week, RECENT_WEEKS)
+    lines = []
+    for cid, (theme, cluster) in sorted(cluster_index.items()):
+        last = max((entry.week for entry in cluster.entries), default="")
+        line = f"- {cid} [theme: {theme}] {cluster.name!r} ({len(cluster.entries)} entries, last {last or 'never'})"
+        if last >= cutoff and cluster.entries:
+            line += " | recent: " + " | ".join(entry.note for entry in cluster.entries[-3:])
+        lines.append(line)
+    return "\n".join(lines) or "(no clusters yet)"
 
 
 async def _group_findings(
@@ -19,6 +44,7 @@ async def _group_findings(
     themes: list[schemas.ThemeDef],
     cluster_index: dict[str, tuple[str, schemas.Cluster]],
     findings: list[Finding],
+    week: str,
 ) -> GroupingPlan:
     """Ask the grouping-bar judgement call — one global call for the week.
 
@@ -28,20 +54,14 @@ async def _group_findings(
     LLM judgement call (grouping bar) — see ``prompts.GROUPING_BAR``.
 
     :param llm: The chat model.
-    :param themes: The watched themes, for definitions.
+    :param themes: The themes.
     :param cluster_index: Cluster id to ``(theme, cluster)`` across all themes.
     :param findings: The week's findings.
+    :param week: The week being grouped.
     :returns: The grouping plan.
     """
-    theme_text = "\n".join(f"- {t.theme}: {t.definition}" for t in themes)
-    existing = (
-        "\n".join(
-            f"- {cid} [theme: {theme}] ({len(cluster.entries)} entries, opened {cluster.opened})"
-            + (" | recent: " + " | ".join(entry.note for entry in cluster.entries[-3:]) if cluster.entries else "")
-            for cid, (theme, cluster) in sorted(cluster_index.items())
-        )
-        or "(no clusters yet)"
-    )
+    theme_text = "\n".join(t.outline() for t in themes)
+    existing = cluster_index_text(cluster_index, week)
     findings_text = "\n".join(
         f"- {f.id} [themes: {', '.join(f.theme_ids) or 'none'}]: {f.title} — {f.summary}" for f in findings
     )
@@ -67,19 +87,19 @@ def _entry_from_finding(week: str, finding: Finding, catalog: schemas.SourceCata
     :param catalog: The parsed source catalog, for the source's class.
     :returns: The cluster entry.
     """
-    classes: dict[str, SourceClass] = {s.id: s.source_class for s in catalog.sources}
-
     return schemas.ClusterEntry(
         week=week,
         finding_id=finding.id,
         source_id=finding.source_id,
-        source_class=classes.get(finding.source_id, "community"),
-        tier=finding.tier,
+        source_class=catalog.class_of(finding.source_id) or UNLISTED_CLASS,
         region=finding.region,
         date=finding.date,
         title=finding.title,
         note=finding.summary,
         url=finding.url,
+        significance=finding.significance,
+        direction=finding.direction,
+        horizon=finding.horizon,
     )
 
 
@@ -126,10 +146,10 @@ async def cluster_node(
     # Record-once: reuse the week's grouping decision on rerun.
     plan = workspace.read_grouping_plan(week)
     if plan is None:
-        plan = await _group_findings(llm, themes, cluster_index, findings)
+        plan = await _group_findings(llm, themes, cluster_index, findings, week)
         workspace.write_grouping_plan(week, plan.model_dump_json(indent=2))
 
-    assigned_ids = {a.finding_id for a in plan.assignments}
+    placed_ids: set[str] = set()
     extended_by_theme: dict[str, int] = {theme.theme: 0 for theme in themes}
     opened_by_theme: dict[str, int] = {theme.theme: 0 for theme in themes}
     reports: list[ClusterReport] = []
@@ -156,14 +176,14 @@ async def cluster_node(
 
         log = logs[theme_name]
 
+        placed_ids.add(finding.id)
+
         if assignment.extends_cluster_id and assignment.extends_cluster_id in cluster_index:
             try:
                 workspace.append_cluster_entry(theme_name, assignment.extends_cluster_id, entry)
                 extended_by_theme[theme_name] += 1
-            except WorkspaceError as exc:
-                # Re-run of the same week: the finding is already recorded.
-                if "already in cluster" not in str(exc):
-                    raise
+            except EntryAlreadyRecordedError:
+                pass  # Re-run of the same week: the finding is already recorded.
         elif assignment.new_cluster:
             cluster = Cluster(
                 id=assignment.new_cluster.id,
@@ -176,24 +196,22 @@ async def cluster_node(
                 workspace.append_cluster(cluster, theme_name, log.created)
                 opened_by_theme[theme_name] += 1
                 cluster_index[cluster.id] = (theme_name, cluster)
-            except WorkspaceError as exc:
+            except ClusterExistsError:
                 # Re-run: the cluster already exists; append the entry instead.
-                if "already exists" in str(exc):
-                    try:
-                        workspace.append_cluster_entry(theme_name, assignment.new_cluster.id, entry)
-                        extended_by_theme[theme_name] += 1
-                    except WorkspaceError as exc2:
-                        if "already in cluster" not in str(exc2):
-                            raise
-                else:
-                    raise
+                try:
+                    workspace.append_cluster_entry(theme_name, assignment.new_cluster.id, entry)
+                    extended_by_theme[theme_name] += 1
+                except EntryAlreadyRecordedError:
+                    pass  # Re-run of the same week: the finding is already recorded.
 
     # Per-theme reports from the refreshed logs.
     for theme in themes:
-        log = workspace.read_cluster_log(theme.theme) or logs[theme.theme]
+        log = log_with_current_classes(workspace.read_cluster_log(theme.theme) or logs[theme.theme], catalog)
         pairs = [(c, c.entries) for c in log.clusters]
-        candidate_trends = [c.id for c, e in sort_ranked([(c, e) for c, e in pairs if is_candidate_trend(e)], catalog)]
-        theme_unmatched = [f.id for f in findings if theme.theme in f.theme_ids and f.id not in assigned_ids]
+        candidate_trends = [
+            c.id for c, e in sort_ranked([(c, e) for c, e in pairs if is_candidate_trend(e, catalog)], catalog)
+        ]
+        theme_unmatched = [f.id for f in findings if theme.theme in f.theme_ids and f.id not in placed_ids]
         reports.append(
             ClusterReport(
                 theme=theme.theme,
@@ -201,11 +219,11 @@ async def cluster_node(
                 clusters_opened=opened_by_theme[theme.theme],
                 findings_unmatched=theme_unmatched,
                 candidate_trends=candidate_trends,
-                notes=[f"{c.id} is {trend_status(e)}" for c, e in pairs],
+                notes=[f"{c.id} is {trend_status(e, catalog)}" for c, e in pairs],
             )
         )
 
-    unmatched = [f.id for f in findings if f.id not in assigned_ids]
+    unmatched = [f.id for f in findings if f.id not in placed_ids]
 
     if unmatched:
         notes.append(f"findings that joined no cluster: {', '.join(unmatched)}")

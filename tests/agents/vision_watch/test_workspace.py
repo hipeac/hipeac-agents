@@ -12,7 +12,6 @@ from hipeac_agents.agents.vision_watch import workspace
 from hipeac_agents.agents.vision_watch.schemas import (
     Cluster,
     ClusterEntry,
-    ClusterLog,
     Finding,
     FindingsFile,
     RejectedFile,
@@ -51,7 +50,7 @@ def entry(week) -> ClusterEntry:
         week=week,
         finding_id="f-2026-W24-01",
         source_id="robot-report",
-        source_class="aggregators",
+        source_class="press",
         tier=2,
         region="global",
         date=date(2026, 6, 9),
@@ -156,7 +155,9 @@ class TestClusterLog:
     def test_append_existing_cluster_raises(self, data_dir, cluster, entry):
         workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
 
-        with pytest.raises(WorkspaceError, match="already exists"):
+        # Its own type: the cluster node recovers from this one and re-raises
+        # every other append-only violation.
+        with pytest.raises(workspace.ClusterExistsError, match="already exists"):
             workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
 
     def test_append_entry_to_existing_cluster(self, data_dir, cluster, entry, week):
@@ -181,43 +182,26 @@ class TestClusterLog:
             data_dir=data_dir,
         )
 
+        # A missing cluster is a real error, not a re-run: it stays a plain
+        # WorkspaceError so the cluster node lets it through.
         with pytest.raises(WorkspaceError, match="does not exist"):
             workspace.append_cluster_entry("physical-ai", "humanoid-deployment", entry, data_dir)
+        assert not isinstance(WorkspaceError("x"), workspace.EntryAlreadyRecordedError)
 
     def test_append_duplicate_finding_raises(self, data_dir, cluster, entry):
         workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
 
-        with pytest.raises(WorkspaceError, match="already"):
+        with pytest.raises(workspace.EntryAlreadyRecordedError, match="f-2026-W24-01"):
             workspace.append_cluster_entry("physical-ai", "humanoid-deployment", entry, data_dir)
 
-    def test_entry_never_edited_or_removed(self, data_dir, cluster, entry):
+    def test_append_duplicate_url_raises_the_same_type(self, data_dir, cluster, entry):
+        """A finding re-entering under a new id but the same URL is still a
+        re-run, so it must be the recoverable type too."""
         workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
+        same_url = entry.model_copy(update={"finding_id": "f-2026-W25-09", "week": "2026-W25"})
 
-        # A reader rewriting the whole log with fewer entries must fail.
-        on_disk = workspace.read_cluster_log("physical-ai", data_dir)
-        on_disk.clusters[0].entries = []
-        path = workspace.clusters_dir(data_dir) / workspace.cluster_filename("physical-ai")
-        with pytest.raises(WorkspaceError):
-            workspace._ensure_log_is_superset(
-                ClusterLog.model_validate_json(path.read_text(encoding="utf-8")),
-                on_disk,
-            )
-
-    def test_cluster_header_never_edited(self, data_dir, cluster, entry):
-        workspace.append_cluster(cluster, theme="physical-ai", created=date(2026, 1, 8), data_dir=data_dir)
-        log = workspace.read_cluster_log("physical-ai", data_dir)
-        proposed = ClusterLog(
-            theme="physical-ai",
-            created=log.created,
-            clusters=[cluster.model_copy(update={"name": "Renamed"})],
-        )
-        path = workspace.clusters_dir(data_dir) / workspace.cluster_filename("physical-ai")
-
-        with pytest.raises(WorkspaceError, match="header"):
-            workspace._ensure_log_is_superset(
-                ClusterLog.model_validate_json(path.read_text(encoding="utf-8")),
-                proposed,
-            )
+        with pytest.raises(workspace.EntryAlreadyRecordedError, match="url"):
+            workspace.append_cluster_entry("physical-ai", "humanoid-deployment", same_url, data_dir)
 
 
 class TestWeeklyDigest:
@@ -228,14 +212,32 @@ class TestWeeklyDigest:
         with pytest.raises(WorkspaceError):
             workspace.write_weekly_digest(week, "# Again", data_dir)
 
-    def test_read_latest_returns_most_recent(self, data_dir):
-        workspace.write_weekly_digest("2026-W23", "older", data_dir)
-        workspace.write_weekly_digest("2026-W24", "newer", data_dir)
 
-        assert workspace.read_latest_weekly_digest(data_dir) == "newer"
+class TestWeeklyLedger:
+    def test_round_trip_and_write_once(self, data_dir, week):
+        from hipeac_agents.agents.vision_watch.schemas import LedgerEntry, LedgerFile
 
-    def test_read_latest_none_when_empty(self, data_dir):
-        assert workspace.read_latest_weekly_digest(data_dir) is None
+        entry = LedgerEntry(
+            question_id="cybersecurity.3",
+            question="How are agents kept safe?",
+            lean="containment gaps exposed",
+            theme="cybersecurity",
+            cluster_id="agent-sandbox-escapes",
+            status="strengthening",
+            early=False,
+            finding_ids=["f-1", "f-2"],
+            title="Agents breach boundaries",
+            text="An agent escaped.",
+        )
+        path = workspace.write_weekly_ledger(
+            LedgerFile(week=week, created=date(2026, 6, 12), entries=[entry]), data_dir
+        )
+
+        assert path.name == f"digest-{week}-ledger.json"
+        assert workspace.read_weekly_ledger(week, data_dir).entries == [entry]
+        assert workspace.read_weekly_ledger("2026-W01", data_dir) is None
+        with pytest.raises(WorkspaceError):
+            workspace.write_weekly_ledger(LedgerFile(week=week, created=date(2026, 6, 12)), data_dir)
 
 
 class TestConfig:
@@ -252,8 +254,7 @@ class TestConfig:
     def test_operator_copy_overrides(self, data_dir):
         config = workspace.workspace_root(data_dir) / "config" / "themes.yaml"
         config.write_text(
-            "themes:\n  - theme: custom\n    chapter: future-ahead\n"
-            "    definition: Custom theme.\n    keywords: [custom]\n",
+            "themes:\n  - theme: custom\n    description: Custom theme.\n",
             encoding="utf-8",
         )
 
@@ -279,3 +280,60 @@ class TestConfig:
         weeks = workspace.list_weeks(data_dir)
 
         assert weeks == ["2026-W23", week]
+
+
+class TestPurgeWeek:
+    """``--redo``: the one sanctioned non-append edit, always backed up."""
+
+    @pytest.fixture
+    def recorded_week(self, data_dir, findings_file, cluster, week):
+        workspace.write_findings_file(findings_file, data_dir)
+        workspace.write_grouping_plan(week, '{"assignments": []}', data_dir)
+        workspace.write_weekly_digest(week, "# digest\n", data_dir)
+        workspace.append_cluster(cluster, "physical-ai", date(2026, 6, 11), data_dir)
+        later = cluster.model_copy(deep=True)
+        later.id = "long-running"
+        later.entries[0].week = "2026-W23"
+        later.entries[0].finding_id = "f-2026-W23-01"
+        later_entry = later.entries[0].model_copy(update={"week": week, "finding_id": "f-2026-W24-02"})
+        later.entries.append(later_entry)
+        workspace.append_cluster(later, "physical-ai", date(2026, 6, 11), data_dir)
+        return week
+
+    def test_harvest_redo_sets_evidence_digest_and_entries_aside(self, data_dir, recorded_week):
+        backup = workspace.purge_week(recorded_week, keep_evidence=False, data_dir=data_dir)
+
+        assert workspace.read_findings_file(recorded_week, data_dir) is None
+        assert workspace.read_weekly_digest(recorded_week, data_dir) is None
+        assert workspace.week_cluster_entry_count(recorded_week, data_dir) == 0
+        log = workspace.read_cluster_log("physical-ai", data_dir)
+        assert [c.id for c in log.clusters] == ["long-running"], "a cluster left empty is dropped"
+        assert [e.week for e in log.clusters[0].entries] == ["2026-W23"], "other weeks are untouched"
+        assert (backup / "evidence" / recorded_week / "findings.json").exists()
+        assert (backup / "digests" / "weekly" / f"digest-{recorded_week}.md").exists()
+        assert (backup / "clusters" / "physical-ai-clusters.json").exists()
+
+    def test_digest_redo_keeps_the_evidence(self, data_dir, recorded_week):
+        backup = workspace.purge_week(recorded_week, keep_evidence=True, data_dir=data_dir)
+
+        assert workspace.read_findings_file(recorded_week, data_dir) is not None
+        assert workspace.read_grouping_plan(recorded_week, data_dir) is None
+        assert workspace.read_weekly_digest(recorded_week, data_dir) is None
+        assert (backup / "evidence" / recorded_week / "grouping.json").exists()
+
+    def test_digest_redo_sets_the_ledger_aside(self, data_dir, recorded_week):
+        from hipeac_agents.agents.vision_watch.schemas import LedgerFile
+
+        workspace.write_weekly_ledger(LedgerFile(week=recorded_week, created=date(2026, 6, 12)), data_dir)
+
+        backup = workspace.purge_week(recorded_week, keep_evidence=True, data_dir=data_dir)
+
+        assert workspace.read_weekly_ledger(recorded_week, data_dir) is None
+        assert (backup / "digests" / "weekly" / f"digest-{recorded_week}-ledger.json").exists()
+
+    def test_sent_marker_stays_so_a_redone_week_is_never_mailed_twice(self, data_dir, recorded_week):
+        workspace.mark_weekly_digest_sent(recorded_week, "m-1", data_dir)
+
+        workspace.purge_week(recorded_week, keep_evidence=True, data_dir=data_dir)
+
+        assert workspace.weekly_digest_sent(recorded_week, data_dir)

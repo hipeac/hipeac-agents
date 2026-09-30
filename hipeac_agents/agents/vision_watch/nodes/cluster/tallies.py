@@ -10,11 +10,48 @@ from hipeac_agents.agents.vision_watch.schemas import Cluster, Finding
 
 
 # Candidate-trend threshold: at least 4 findings across at least 3 source
-# classes over at least 3 distinct weeks, including at least one tier-1 or
-# tier-2 finding.
+# classes over at least 3 distinct weeks, with at least one primary source —
+# a story told only by press, analysts and commentators has not converged.
 CANDIDATE_TREND_MIN_FINDINGS = 4
 CANDIDATE_TREND_MIN_CLASSES = 3
 CANDIDATE_TREND_MIN_WEEKS = 3
+
+# The one class for findings from outside the catalog (sweep, inbox, board
+# tips) and for entries whose recorded class the catalog no longer declares.
+UNLISTED_CLASS = "unlisted"
+
+
+def current_classes(entries: list[schemas.ClusterEntry], catalog: schemas.SourceCatalog) -> list[schemas.ClusterEntry]:
+    """Give each entry its source's class as of the current catalog.
+
+    A reclassified source counts in its new class for every past week, without
+    rewriting the append-only logs. A source no longer in the catalog keeps its
+    recorded class while the catalog still declares it, otherwise it is unlisted.
+
+    :param entries: The cluster's log entries, as recorded.
+    :param catalog: The parsed source catalog.
+    :returns: Copies of the entries with their current class; the log on disk is untouched.
+    """
+
+    def resolve(entry: schemas.ClusterEntry) -> schemas.ClusterEntry:
+        recorded = entry.source_class if entry.source_class in catalog.classes else UNLISTED_CLASS
+        source_class = catalog.class_of(entry.source_id) or recorded
+        return entry if source_class == entry.source_class else entry.model_copy(update={"source_class": source_class})
+
+    return [resolve(entry) for entry in entries]
+
+
+def log_with_current_classes(log: schemas.ClusterLog, catalog: schemas.SourceCatalog) -> schemas.ClusterLog:
+    """Read a whole cluster log with every entry's class as of the current catalog.
+
+    :param log: The cluster log, as recorded.
+    :param catalog: The parsed source catalog.
+    :returns: A copy of the log for tallying; never written back.
+    """
+    clusters = [
+        cluster.model_copy(update={"entries": current_classes(cluster.entries, catalog)}) for cluster in log.clusters
+    ]
+    return log.model_copy(update={"clusters": clusters})
 
 
 def reach(entries: list[schemas.ClusterEntry]) -> int:
@@ -49,22 +86,23 @@ def entries_through(entries: list[schemas.ClusterEntry], week: str) -> list[sche
     return [entry for entry in entries if entry.week <= week]
 
 
-def evidence_strength(entries: list[schemas.ClusterEntry]) -> int:
-    """Return the best (lowest-number) tier present in a cluster.
+def has_primary_source(entries: list[schemas.ClusterEntry], catalog: schemas.SourceCatalog) -> bool:
+    """Check a cluster has at least one entry from a source that makes the news.
 
     :param entries: The cluster's log entries.
-    :returns: The lowest tier, 1-4.
+    :param catalog: The parsed source catalog, which marks the primary classes.
+    :returns: ``True`` when some entry comes from a primary class.
     """
-    return min(entry.tier for entry in entries)
+    return any(catalog.is_primary(entry.source_class) for entry in entries)
 
 
 def strongest(entries: list[schemas.ClusterEntry]) -> schemas.ClusterEntry:
-    """Pick a cluster's strongest entry: best tier first, most recent breaks ties.
+    """Pick a cluster's strongest entry: most significant first, most recent breaks ties.
 
     :param entries: The cluster's log entries.
     :returns: The strongest entry.
     """
-    return min(entries, key=lambda entry: (entry.tier, -entry.date.toordinal()))
+    return min(entries, key=lambda entry: (-(entry.significance or 3), -entry.date.toordinal()))
 
 
 def momentum(entries: list[schemas.ClusterEntry], week: str) -> tuple[int, float]:
@@ -89,95 +127,36 @@ def spread(entries: list[schemas.ClusterEntry]) -> int:
     return len({entry.region for entry in entries})
 
 
-def independence_share(entries: list[schemas.ClusterEntry], catalog: schemas.SourceCatalog) -> float:
-    """Compute the share of a cluster's entries leaning on low-independence sources.
-
-    Europe agreeing with itself is real but weaker than the world independently
-    converging; a candidate trend resting only on low-independence (e.g.
-    ``eu-uptake``) sources is framed as European uptake, not momentum.
-
-    :param entries: The cluster's log entries.
-    :param catalog: The parsed source catalog.
-    :returns: The share (0.0-1.0) of entries from low-independence sources.
-    """
-    independence = {s.id: s.independence for s in catalog.sources}
-
-    if not entries:
-        return 0.0
-
-    low = sum(1 for e in entries if independence.get(e.source_id) == "low")
-
-    return low / len(entries)
-
-
-def is_candidate_trend(entries: list[schemas.ClusterEntry]) -> bool:
+def is_candidate_trend(entries: list[schemas.ClusterEntry], catalog: schemas.SourceCatalog) -> bool:
     """Check the documented candidate-trend threshold.
 
     :param entries: The cluster's log entries.
+    :param catalog: The parsed source catalog, for the primary-source rule.
     :returns: ``True`` when the cluster crosses the threshold.
     """
     return (
         len(entries) >= CANDIDATE_TREND_MIN_FINDINGS
         and reach(entries) >= CANDIDATE_TREND_MIN_CLASSES
         and persistence(entries) >= CANDIDATE_TREND_MIN_WEEKS
-        and evidence_strength(entries) <= 2
+        and has_primary_source(entries, catalog)
     )
 
 
-def threshold_progress(entries: list[schemas.ClusterEntry]) -> str:
-    """Render a cluster's progress toward the candidate-trend threshold.
-
-    Makes the promotion ladder visible: the board sees exactly which of the
-    four criteria (4 findings, 3 source classes, 3 weeks, tier ≤ 2) a
-    cluster already meets and which it needs.
-
-    :param entries: The cluster's log entries.
-    :returns: Text like ``"3/4 findings · 1/3 source classes · 2/3 weeks — needs one more source class"``.
-    """
-    findings = len(entries)
-    classes = reach(entries)
-    weeks = persistence(entries)
-    met = (
-        findings >= CANDIDATE_TREND_MIN_FINDINGS,
-        classes >= CANDIDATE_TREND_MIN_CLASSES,
-        weeks >= CANDIDATE_TREND_MIN_WEEKS,
-        evidence_strength(entries) <= 2,
-    )
-    missing = []
-
-    if not met[0]:
-        missing.append(f"{CANDIDATE_TREND_MIN_FINDINGS - findings} more findings")
-    if not met[1]:
-        missing.append(f"{CANDIDATE_TREND_MIN_CLASSES - classes} more source classes")
-    if not met[2]:
-        missing.append(f"{CANDIDATE_TREND_MIN_WEEKS - weeks} more weeks")
-
-    progress = (
-        f"{findings}/{CANDIDATE_TREND_MIN_FINDINGS} findings · "
-        f"{classes}/{CANDIDATE_TREND_MIN_CLASSES} source classes · {weeks}/{CANDIDATE_TREND_MIN_WEEKS} weeks"
-    )
-
-    if not met[3]:
-        missing.append("a tier-1 or tier-2 finding")
-
-    needs = " — needs " + " and ".join(missing) if missing else " — threshold met"
-    return progress + needs
-
-
-def trend_status(entries: list[schemas.ClusterEntry]) -> str:
+def trend_status(entries: list[schemas.ClusterEntry], catalog: schemas.SourceCatalog) -> str:
     """Derive a cluster's status label: strengthening, candidate-trend, or emerging.
 
     Below the threshold a cluster is *emerging*; once well past it (broad
-    reach, sustained six-plus weeks, a tier-1 anchor) it is *strengthening*.
+    reach, sustained six-plus weeks) it is *strengthening*.
     Labels are derived each run; nothing about them is stored.
 
     :param entries: The cluster's log entries.
+    :param catalog: The parsed source catalog, for the primary-source rule.
     :returns: One of ``"strengthening"``, ``"candidate-trend"``, ``"emerging"``.
     """
-    if not is_candidate_trend(entries):
+    if not is_candidate_trend(entries, catalog):
         return "emerging"
 
-    if persistence(entries) >= 6 and reach(entries) >= 4 and evidence_strength(entries) == 1:
+    if persistence(entries) >= 6 and reach(entries) >= 4:
         return "strengthening"
 
     return "candidate-trend"
@@ -204,21 +183,20 @@ def sort_ranked(
 ) -> list[tuple[Cluster, list[schemas.ClusterEntry]]]:
     """Rank clusters by importance, strongest first (derived, never stored).
 
-    Rule of thumb: tier first, then reach x persistence, discounted for low
-    independence. A presentation aid, not a gate; the datapoint tie-breaker
-    stays qualitative and is left to the digest prose.
+    Rule of thumb: primary sources first, then reach x persistence. A
+    presentation aid, not a gate; the datapoint tie-breaker stays qualitative
+    and is left to the digest prose.
 
     :param clusters: ``(cluster, entries)`` pairs to rank.
-    :param catalog: The parsed source catalog, for the independence discount.
+    :param catalog: The parsed source catalog, for the primary-source rule.
     :returns: The pairs, strongest first.
     """
 
-    def sort_key(pair: tuple[Cluster, list[schemas.ClusterEntry]]) -> tuple[int, int, float]:
+    def sort_key(pair: tuple[Cluster, list[schemas.ClusterEntry]]) -> tuple[int, int]:
         _, entries = pair
         return (
-            0 if evidence_strength(entries) <= 2 else 1,
+            0 if has_primary_source(entries, catalog) else 1,
             -(reach(entries) * persistence(entries)),
-            independence_share(entries, catalog),
         )
 
     return sorted(clusters, key=sort_key)
@@ -229,34 +207,58 @@ def sort_lead_candidates(
     week: str,
     catalog: schemas.SourceCatalog,
 ) -> list[tuple[Cluster, list[schemas.ClusterEntry], list[schemas.ClusterEntry]]]:
-    """Rank clusters for the week's lead story ("One big thing"), strongest first.
+    """Rank the week's candidate stories, strongest first.
 
-    A different question from ``sort_ranked``'s standing evidence weight: this
-    asks which cluster made *this week's* news — best tier among this week's
-    entries, burst size, an established-evidence tie-break, momentum against
-    the cluster's prior rate, then an independence discount.
+    A different question from ``sort_ranked``'s standing evidence weight: the
+    Vision wants what is emerging, not what is already big. So the lead is
+    the cluster with the most novelty (a new story, or one reaching new source
+    classes and regions), then the most source classes among this week's
+    entries, then burst size, candidate-trend status and momentum against the
+    cluster's prior rate. The gate's significance does not rank stories: the
+    small model scores frontier-lab news higher, and ranking on it doubled
+    that news's share of the digest.
 
     :param candidates: ``(cluster, scoped_entries, this_week_entries)`` triples;
         ``scoped_entries`` is the cluster's entries through this week.
     :param week: The current week label.
-    :param catalog: The parsed source catalog, for the independence discount.
+    :param catalog: The parsed source catalog, for the primary-source rule.
     :returns: The triples, strongest lead first.
     """
 
     def sort_key(
         item: tuple[Cluster, list[schemas.ClusterEntry], list[schemas.ClusterEntry]],
-    ) -> tuple[int, int, int, float, float]:
+    ) -> tuple[int, int, int, int, float]:
         _, scoped, this_week = item
         this_week_count, prior_rate = momentum(scoped, week)
         return (
-            evidence_strength(this_week),
+            -novelty(scoped, week),
+            -reach(this_week),
             -len(this_week),
-            0 if is_candidate_trend(scoped) else 1,
+            0 if is_candidate_trend(scoped, catalog) else 1,
             -this_week_count / max(prior_rate, 1),
-            independence_share(scoped, catalog),
         )
 
     return sorted(candidates, key=sort_key)
+
+
+def novelty(entries: list[schemas.ClusterEntry], week: str) -> int:
+    """Score how new a cluster's story is this week (derived, never stored).
+
+    A cluster seen for the first time scores 1; an established one scores one
+    point per source class and per region it reaches for the first time —
+    a story spreading beyond its first outlets is how emergence shows.
+
+    :param entries: The cluster's entries through ``week``.
+    :param week: The current week label.
+    :returns: The novelty score, 0 for a story moving only where it already was.
+    """
+    earlier = [e for e in entries if e.week < week]
+    current = [e for e in entries if e.week == week]
+    if not earlier:
+        return 1
+    new_classes = {e.source_class for e in current} - {e.source_class for e in earlier}
+    new_regions = {e.region for e in current} - {e.region for e in earlier}
+    return len(new_classes) + len(new_regions)
 
 
 def group_key_by_theme(findings: list[Finding]) -> dict[str, list[Finding]]:

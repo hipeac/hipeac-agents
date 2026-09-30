@@ -9,10 +9,11 @@ import re
 from datetime import date
 
 from hipeac_agents.agents.vision_watch import schemas
-from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, RejectedItem, Tier
+from hipeac_agents.agents.vision_watch.schemas import Finding, FindingsFile, RejectedItem
 
 
 _DATE_IN_TEXT = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+_META_REFRESH = re.compile(r"""http-equiv=["']?refresh["']?[^>]*?content=["'][^;"']*;\s*(?:url=)?([^"'>\s]+)""", re.I)
 _URL_IN_TEXT = re.compile(r"https?://[^\s\)\>\"']+")
 
 
@@ -41,16 +42,59 @@ def http_url_is_dead(url: str) -> bool | None:
         return False
 
 
-def build_due_list(catalog: schemas.SourceCatalog) -> list[schemas.SourceEntry]:
-    """Build the list of sources due this run: every evidence-stream source.
+def resolve_link(url: str, hops: int = 3) -> str:
+    """Follow a newsletter's click-tracker to the page it stands for.
 
-    All evidence sources are checked every week; the ``signals`` stream is
-    the future-signals loop's, not the harvest's.
+    A redirect that carries its destination (``google.com/url?q=…``) is read
+    without a request; a plain ``urllib`` GET follows HTTP redirects; a tracker
+    that answers with its own page and a meta refresh (Brevo) is followed from
+    that page. A
+    blocked destination (403 on a news site) still names its URL. Anything
+    unexpected returns the last URL reached — the caller checks it with
+    ``is_story_url``.
+
+    :param url: The wrapped link.
+    :param hops: How many wrappers to unwrap in a row.
+    :returns: The destination URL, or the last one reached.
+    """
+    import urllib.error
+    import urllib.request
+
+    from hipeac_agents.services.urls import is_link_wrapper, unwrap_query_redirect
+
+    for _ in range(hops):
+        if target := unwrap_query_redirect(url):
+            url = target
+            continue
+        if not url.lower().startswith(("http://", "https://")):
+            return url
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (hipeac-vision-watch)"})  # noqa: S310 — http(s) schemes enforced above
+            with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 — http(s) schemes enforced above
+                final, body = response.geturl(), response.read(65536).decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            return exc.geturl() or url
+        except Exception:
+            return url
+        if not is_link_wrapper(final):
+            return final
+        refresh = _META_REFRESH.search(body)
+        if refresh is None and unwrap_query_redirect(final) is None:
+            return final
+        url = refresh.group(1) if refresh else final
+    return url
+
+
+def build_due_list(catalog: schemas.SourceCatalog) -> list[schemas.SourceEntry]:
+    """Build the list of sources due this run: every catalog source, every week.
+
+    Skipped sources stay in the list, so they are reported (as blocked)
+    rather than silently missing from the run summary.
 
     :param catalog: The parsed source catalog.
-    :returns: The evidence-stream sources.
+    :returns: The catalog's sources.
     """
-    return [source for source in catalog.sources if source.stream == "evidence"]
+    return list(catalog.sources)
 
 
 def window_gate(item_date: date | None, window_start: date, window_end: date) -> bool:
@@ -76,40 +120,6 @@ def duplicate_gate(url: str, prior_findings: list[FindingsFile]) -> bool:
     """
     known = {normalize_url(finding.url) for file in prior_findings for finding in file.findings}
     return normalize_url(url) in known
-
-
-def keyword_hits(text: str, keywords: list[str]) -> int:
-    """Count case-insensitive keyword hits — the cheap pre-filter before an LLM call.
-
-    A keyword also matches without its trailing ``s`` (naive singular), so
-    ``humanoids`` hits ``Humanoid deployed``.
-
-    :param text: The item title and summary.
-    :param keywords: The watched themes' keywords.
-    :returns: Number of keyword hits.
-    """
-    lowered = text.lower()
-    hits = 0
-
-    for keyword in keywords:
-        stem = keyword.lower()
-        if stem in lowered or (stem.endswith("s") and stem[:-1] in lowered):
-            hits += 1
-
-    return hits
-
-
-def cap_tier(item_tier: int, catalog_tier: int) -> Tier:
-    """Cap the item's tier by the source's catalog ceiling.
-
-    The tier follows the development's state, not the source — a catalog tier
-    is a ceiling, not a default.
-
-    :param item_tier: The tier the judgement call assigned (1-4).
-    :param catalog_tier: The source's catalog tier.
-    :returns: The capped tier.
-    """
-    return max(1, min(4, item_tier, catalog_tier))
 
 
 def normalize_url(url: str) -> str:

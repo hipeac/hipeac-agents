@@ -6,7 +6,8 @@ default provider uses the official Firecrawl Python SDK over its plain API.
 """
 
 import asyncio
-from typing import Any, Protocol
+from datetime import date
+from typing import Any, Protocol, runtime_checkable
 
 from hipeac_agents import settings
 from hipeac_agents.services.types import ScrapeResult, SearchHit
@@ -14,8 +15,14 @@ from hipeac_agents.services.urls import normalize_url
 from hipeac_agents.storage import cache as json_cache
 
 
+@runtime_checkable
 class CrawlClient(Protocol):
-    """What nodes may do against the open web: scrape one URL, search the web."""
+    """What nodes may do against the open web: scrape one URL, search the web.
+
+    Runtime-checkable so a provider class can be asserted against it in tests:
+    a missing method here is an ``AttributeError`` at harvest time, swallowed
+    by the per-source error handling into a nondescript failed outcome.
+    """
 
     async def scrape(self, url: str, fresh: bool = False) -> ScrapeResult | None:
         """Fetch a single URL and return its markdown content.
@@ -25,8 +32,10 @@ class CrawlClient(Protocol):
         """
         ...
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchHit]:
-        """Search the open web and return the hits."""
+    async def search(
+        self, query: str, limit: int = 5, since: date | None = None, until: date | None = None
+    ) -> list[SearchHit]:
+        """Search the open web and return the hits, optionally within a date range."""
         ...
 
     async def fetch_feed(self, url: str) -> str | None:
@@ -48,8 +57,12 @@ def _page_title(document: Any) -> str:
 
 
 def _page_url(document: Any) -> str:
+    # ``url`` is where the scrape ended, after redirects; ``source_url`` is
+    # only what was asked for — a newsletter's tracker, when that was the link.
     metadata = getattr(document, "metadata", None)
-    return (getattr(metadata, "sourceURL", None) or getattr(metadata, "url", "") or "") if metadata else ""
+    if not metadata:
+        return ""
+    return getattr(metadata, "url", None) or getattr(metadata, "source_url", None) or ""
 
 
 def _page_published_at(document: Any) -> str | None:
@@ -61,6 +74,32 @@ def _page_published_at(document: Any) -> str | None:
 def _status_code(document: Any) -> int | None:
     metadata = getattr(document, "metadata", None)
     return getattr(metadata, "statusCode", None) if metadata else None
+
+
+async def fetch_feed_direct(url: str) -> str | None:
+    """Fetch a raw RSS/Atom document over plain HTTP.
+
+    Feeds are deterministic XML — no browser rendering needed, so they never
+    go through Firecrawl. A plain GET with a browser-ish User-Agent suffices;
+    failures return ``None`` and the caller falls back to page scraping.
+
+    Provider-independent by nature, so every crawl client shares this one
+    implementation rather than declaring its own.
+
+    :param url: The feed URL.
+    :returns: The raw XML text, or ``None`` when the fetch fails.
+    """
+    import urllib.request
+
+    def _get() -> str | None:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "hipeac-vision-watch/0.1"})  # noqa: S310 — feed URLs come from operator config
+            with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 — feed URLs come from operator config
+                return response.read().decode("utf-8", errors="replace")
+        except Exception:
+            return None
+
+    return await asyncio.to_thread(_get)
 
 
 class FirecrawlCrawl:
@@ -99,15 +138,28 @@ class FirecrawlCrawl:
             published_at=_page_published_at(document),
         )
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchHit]:
+    async def search(
+        self, query: str, limit: int = 5, since: date | None = None, until: date | None = None
+    ) -> list[SearchHit]:
         """Search the web and return normalised hits.
 
         :param query: The search query.
         :param limit: Maximum number of results.
+        :param since: Only results published on or after this day.
+        :param until: Only results published on or before this day.
         :returns: The search hits, empty when the search fails.
         """
+        tbs = None
+        if since or until:
+            bounds = ["cdr:1"]
+            if since:
+                bounds.append(f"cd_min:{since:%m/%d/%Y}")
+            if until:
+                bounds.append(f"cd_max:{until:%m/%d/%Y}")
+            tbs = ",".join(bounds)
+
         try:
-            data = await asyncio.to_thread(self._client.search, query, limit=limit)
+            data = await asyncio.to_thread(self._client.search, query, limit=limit, tbs=tbs)
         except Exception:
             return []
 
@@ -134,6 +186,14 @@ class FirecrawlCrawl:
             )
 
         return hits[:limit]
+
+    async def fetch_feed(self, url: str) -> str | None:
+        """Fetch a raw RSS/Atom document; a plain GET, not a Firecrawl call.
+
+        :param url: The feed URL.
+        :returns: The raw XML text, or ``None`` when the fetch fails.
+        """
+        return await fetch_feed_direct(url)
 
 
 class CachedCrawl:
@@ -173,42 +233,30 @@ class CachedCrawl:
 
         return result
 
-    async def search(self, query: str, limit: int = 5) -> list[SearchHit]:
+    async def search(
+        self, query: str, limit: int = 5, since: date | None = None, until: date | None = None
+    ) -> list[SearchHit]:
         """Search the web; pass-through to the wrapped client.
 
         :param query: The search query.
         :param limit: Maximum number of results.
+        :param since: Only results published on or after this day.
+        :param until: Only results published on or before this day.
         :returns: The search hits, empty when the search fails.
         """
-        return await self._client.search(query, limit=limit)
-
-
-class DirectFeedFetch:
-    """Feed fetcher: plain HTTP GET for RSS/Atom documents.
-
-    Feeds are deterministic XML — no browser rendering needed, so they never
-    go through Firecrawl. A plain GET with a browser-ish User-Agent suffices;
-    failures return ``None`` and the caller falls back to page scraping.
-    """
+        return await self._client.search(query, limit=limit, since=since, until=until)
 
     async def fetch_feed(self, url: str) -> str | None:
-        """Fetch a raw RSS/Atom document.
+        """Fetch a feed; pass-through to the wrapped client, never cached.
+
+        The cache exists to avoid paying twice for the same page. A feed is
+        free to fetch and its whole point is what changed since last time, so
+        a cached copy would serve last week's entries to this week's window.
 
         :param url: The feed URL.
         :returns: The raw XML text, or ``None`` when the fetch fails.
         """
-        import urllib.error
-        import urllib.request
-
-        def _get() -> str | None:
-            try:
-                request = urllib.request.Request(url, headers={"User-Agent": "hipeac-vision-watch/0.1"})  # noqa: S310 — feed URLs come from operator config
-                with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310 — feed URLs come from operator config
-                    return response.read().decode("utf-8", errors="replace")
-            except Exception:
-                return None
-
-        return await asyncio.to_thread(_get)
+        return await self._client.fetch_feed(url)
 
 
 def load_crawl_client() -> CrawlClient | None:

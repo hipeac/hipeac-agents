@@ -1,36 +1,30 @@
-"""Structured-output models for the digest node's judgement calls.
+"""Structured-output models for the digest node's judgement call.
 
-Each is paired with a prompt of the same purpose in ``prompts.py``.
+Paired with ``DIGEST_STORIES`` in ``prompts.py``.
 """
 
 from pydantic import BaseModel, Field
 
 
-class DigestProse(BaseModel):
-    """Prose for one digest item, in the documented anatomy."""
+class DigestItem(BaseModel):
+    """One candidate told as a signal: the open question it moves, and which way."""
 
-    lead: str = Field(description="Bold lead-in: what happened (no link, no date — the template adds the source line)")
-    why_it_matters: str = Field(description="Consequence for the field or Europe")
-    europe: str = Field(description="The European stake, tagged GAP | OPPORTUNITY | DEPENDENCY")
-    maturity: str = Field(description="watch/trial/established, low/moderate/high with tally")
-
-
-class InBrief(BaseModel):
-    """The ~100-word In brief section of the digest."""
-
-    text: str = Field(description="~100 words: the bottom line of the week")
-
-
-class SignalGroup(BaseModel):
-    """One prose blurb tying 2-3 off-theme rejects to a shared dynamic."""
-
-    blurb: str = Field(description="One plain sentence naming the shared dynamic (no markdown, no links)")
-    urls: list[str] = Field(description="2-3 of the given rejects' URLs that this blurb covers")
-
-
-class SignalGroups(BaseModel):
-    """The week's "Also worth watching" groups, mined from off-theme rejects."""
-
-    groups: list[SignalGroup] = Field(
-        default=[], description="At most 4 groups, strongest first; empty when nothing forms a coherent signal"
+    story: str = Field(description="The candidate's story key, e.g. S3")
+    question: str = Field(description="The id of the open question it bears on, e.g. agentic-ai.1, or NEW")
+    lean: str = Field(
+        description="2-5 words: the direction it pushes the answer, never a restatement of the question; "
+        "for NEW, the topic"
     )
+    title: str = Field(description="A short title, 3-6 words, no markdown")
+    text: str = Field(
+        description="Full story: 1-2 sentences; short item: one sentence. Cite findings inline as [short phrase](F<n>)"
+    )
+    brief: bool = Field(description="True for a one-line item, false for a full story")
+
+
+class WeeklyDigest(BaseModel):
+    """The week's digest: a headline, a bottom line, and one item per candidate that moves an answer."""
+
+    headline: str = Field(description="The week's headline, at most 8 words, no markdown — the email subject")
+    this_week: str = Field(description="1-2 sentences: the open question that moved most this week, and which way")
+    items: list[DigestItem] = Field(default=[], description="Per theme, full stories first, then short items")

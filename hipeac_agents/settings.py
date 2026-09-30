@@ -27,12 +27,15 @@ AGENTMAIL_API_KEY = os.environ.get("AGENTMAIL_API_KEY") or None
 HIPEAC_MCP_URL = os.environ.get("HIPEAC_MCP_URL") or None
 
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")
-LLM_MODEL = os.environ.get("OPENAI_CHAT_MODEL", "gpt-5.6-luna")
-LLM_JUDGEMENT_MODEL = os.environ.get("OPENAI_JUDGEMENT_MODEL", "gpt-4o-mini")
+# Three capability tiers, shared by every agent: a cheap small model for
+# high-volume classification, a base model for everyday judgement, and a
+# thinking model for the few calls whose output people read. Each tier has a
+# reasoning effort; an empty value sends none (models without reasoning).
+LLM_SMALL_MODEL = os.environ.get("LLM_SMALL_MODEL", "gpt-6-luna")
+LLM_SMALL_REASONING = os.environ.get("LLM_SMALL_REASONING", "none")
+LLM_BASE_MODEL = os.environ.get("LLM_BASE_MODEL", "gpt-6-sol")
+LLM_BASE_REASONING = os.environ.get("LLM_BASE_REASONING", "low")
+LLM_THINKING_MODEL = os.environ.get("LLM_THINKING_MODEL", "gpt-6-sol")
+LLM_THINKING_REASONING = os.environ.get("LLM_THINKING_REASONING", "low")
 
 SENTRY_DSN = os.environ.get("SENTRY_DSN") or None
-
-# TODO(v1): Deep Research escalation for bot_protected sources is not wired
-# up — no provider configured for Deep Research yet, so those sources are
-# reported as blocked. The general sweep runs as a per-theme Firecrawl search
-# in the harvest's sweep channel.

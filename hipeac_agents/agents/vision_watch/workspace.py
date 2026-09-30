@@ -23,10 +23,15 @@ The workspace rules are enforced as code, not convention:
    cluster logs, and both only ever add — never edit or remove. A reader
    derives momentum, reach, and persistence by tallying entries at read time;
    no such field is ever stored.
+3. The one sanctioned exception is ``purge_week``: an operator-invoked redo
+   (``--redo``) that moves a week's files into ``_backup/`` and removes that
+   week's cluster entries, after backing the logs up.
 """
 
+import json
 import re
-from datetime import date
+import shutil
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import yaml
@@ -37,6 +42,23 @@ from hipeac_agents.storage import WorkspaceError, write_once
 
 
 _WEEK_LABEL = re.compile(r"\d{4}-W\d{2}")
+
+
+class ClusterExistsError(WorkspaceError):
+    """Raised when a cluster id is already present in its theme's log.
+
+    Its own type, not a message: a re-run of the same week hits this as a
+    matter of course and recovers by appending to the existing cluster, so
+    callers must be able to tell it apart from a real append-only violation.
+    """
+
+
+class EntryAlreadyRecordedError(WorkspaceError):
+    """Raised when a finding is already recorded in the cluster it targets.
+
+    Matched on the finding id or on its URL — either way the entry is already
+    in the log, which makes re-running a week a no-op rather than an error.
+    """
 
 
 # --------------------------------------------------------------------------- #
@@ -143,6 +165,45 @@ def grouping_path(week: str, data_dir: str | None = None) -> Path:
     return week_dir(week, data_dir) / "grouping.json"
 
 
+def write_sources_file(file: schemas.SourcesFile, data_dir: str | None = None) -> Path:
+    """Write the week's per-source harvest report (write-once)."""
+    return write_once(week_dir(file.week, data_dir) / "sources.json", file.model_dump_json(indent=2))
+
+
+def read_sources_file(week: str, data_dir: str | None = None) -> schemas.SourcesFile | None:
+    """Read a week's per-source harvest report.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The report, or ``None`` when the week has none (harvested before reports existed).
+    """
+    path = week_dir(week, data_dir) / "sources.json"
+    return schemas.SourcesFile.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def write_health(file: schemas.HealthFile, markdown: str, data_dir: str | None = None) -> Path:
+    """Write a week's source-health labels and their readable report (write-once).
+
+    :param file: The labels.
+    :param markdown: The rendered report.
+    :param data_dir: Optional workspace-root override.
+    :returns: The markdown report's path.
+    """
+    write_once(week_dir(file.week, data_dir) / "health.json", file.model_dump_json(indent=2))
+    return write_once(week_dir(file.week, data_dir) / "health.md", markdown)
+
+
+def read_health_file(week: str, data_dir: str | None = None) -> schemas.HealthFile | None:
+    """Read a week's source-health labels.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The labels, or ``None`` when the week has no health report.
+    """
+    path = week_dir(week, data_dir) / "health.json"
+    return schemas.HealthFile.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
 def write_grouping_plan(week: str, plan_json: str, data_dir: str | None = None) -> Path:
     """Record the week's grouping decision (write-once).
 
@@ -187,6 +248,51 @@ def cache_root(data_dir: str | None = None) -> Path:
     return workspace_root(data_dir) / "cache"
 
 
+def feed_snapshot_path(week: str, source_id: str, data_dir: str | None = None) -> Path:
+    """Return the path of one source's feed snapshot for a week.
+
+    Snapshots live under the cache, not the week's evidence: they are
+    mutable while the week is open, and a ``--redo`` must not discard them.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param source_id: The catalog source id.
+    :param data_dir: Optional workspace-root override.
+    :returns: ``cache/feed-snapshots/<week>/<source>.json`` as a ``Path``.
+    """
+    return cache_root(data_dir) / "feed-snapshots" / week / f"{source_id}.json"
+
+
+def read_feed_snapshot(week: str, source_id: str, data_dir: str | None = None) -> list:
+    """Read the feed entries captured for a source during a week.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param source_id: The catalog source id.
+    :param data_dir: Optional workspace-root override.
+    :returns: The captured candidates, empty when none were captured.
+    """
+    from hipeac_agents.agents.vision_watch.nodes.harvest.models import CandidateItem
+
+    path = feed_snapshot_path(week, source_id, data_dir)
+    if not path.exists():
+        return []
+    return [CandidateItem.model_validate(item) for item in json.loads(path.read_text(encoding="utf-8"))]
+
+
+def write_feed_snapshot(week: str, source_id: str, items: list, data_dir: str | None = None) -> Path:
+    """Replace a source's feed snapshot for a week (mutable while the week is open).
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param source_id: The catalog source id.
+    :param items: The candidates to keep.
+    :param data_dir: Optional workspace-root override.
+    :returns: The written path.
+    """
+    path = feed_snapshot_path(week, source_id, data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([item.model_dump() for item in items], indent=2), encoding="utf-8")
+    return path
+
+
 def cluster_filename(theme: str) -> str:
     """Return the cluster-log filename for a theme.
 
@@ -197,6 +303,24 @@ def cluster_filename(theme: str) -> str:
     :returns: ``"physical-ai-clusters.json"``.
     """
     return f"{theme}-clusters.json"
+
+
+def signals_filename(week: str) -> str:
+    """Return the filename of a week's signals log, kept beside its digest.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :returns: ``"digest-2026-W24-signals.md"``.
+    """
+    return f"digest-{week}-signals.md"
+
+
+def ledger_filename(week: str) -> str:
+    """Return the filename of a week's ledger, kept beside its digest.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :returns: ``"digest-2026-W24-ledger.json"``.
+    """
+    return f"digest-{week}-ledger.json"
 
 
 def digest_filename(week: str) -> str:
@@ -262,22 +386,6 @@ def read_all_findings(data_dir: str | None = None) -> list[schemas.FindingsFile]
     return files
 
 
-def read_recent_findings(count: int = 2, data_dir: str | None = None) -> list[schemas.FindingsFile]:
-    """Read the most recent findings files (for duplicate detection).
-
-    :param count: How many recent weeks to read.
-    :param data_dir: Optional workspace-root override.
-    :returns: The parsed findings files, oldest first.
-    """
-    files = []
-
-    for week in list_weeks(data_dir)[-count:]:
-        if file := read_findings_file(week, data_dir):
-            files.append(file)
-
-    return files
-
-
 def write_rejected_file(file: schemas.RejectedFile, data_dir: str | None = None) -> Path:
     """Write the week's rejected-audit file (write-once)."""
     return write_once(rejected_path(file.week, data_dir), file.model_dump_json(indent=2))
@@ -310,36 +418,6 @@ def _read_cluster_log(theme: str, data_dir: str | None) -> schemas.ClusterLog:
         raise WorkspaceError(f"cluster log for theme '{theme}' does not exist yet")
 
     return schemas.ClusterLog.model_validate_json(path.read_text(encoding="utf-8"))
-
-
-def _ensure_log_is_superset(existing: schemas.ClusterLog, proposed: schemas.ClusterLog) -> None:
-    """Check a proposed cluster-log write only ever adds clusters and entries.
-
-    :param existing: The log currently on disk.
-    :param proposed: The log about to be written.
-    :raises WorkspaceError: If an existing entry or cluster was edited or
-        removed (append-only violation).
-    """
-    by_id = {cluster.id: cluster for cluster in existing.clusters}
-
-    for cluster in proposed.clusters:
-        prior = by_id.get(cluster.id)
-
-        if prior is None:
-            continue
-
-        if cluster.name != prior.name or cluster.opened != prior.opened:
-            raise WorkspaceError(f"cluster '{cluster.id}' header may not be edited")
-
-        prior_ids = [entry.finding_id for entry in prior.entries]
-        proposed_ids = [entry.finding_id for entry in cluster.entries]
-
-        if len(proposed_ids) < len(prior_ids):
-            raise WorkspaceError(f"cluster '{cluster.id}' entries may not be removed")
-
-        for old_id, new_id in zip(prior_ids, proposed_ids, strict=True):
-            if old_id != new_id:
-                raise WorkspaceError(f"cluster '{cluster.id}' entries may not be reordered or edited")
 
 
 def read_cluster_log(theme: str, data_dir: str | None = None) -> schemas.ClusterLog | None:
@@ -379,13 +457,13 @@ def append_cluster(cluster: schemas.Cluster, theme: str, created: date, data_dir
     :param theme: The theme id the cluster belongs to.
     :param created: Creation date recorded on a brand-new log.
     :param data_dir: Optional workspace-root override.
-    :raises WorkspaceError: If the cluster id already exists in the log.
+    :raises ClusterExistsError: If the cluster id already exists in the log.
     """
     path = clusters_dir(data_dir) / cluster_filename(theme)
     if path.exists():
         log = _read_cluster_log(theme, data_dir)
         if any(existing.id == cluster.id for existing in log.clusters):
-            raise WorkspaceError(f"cluster '{cluster.id}' already exists in theme '{theme}'")
+            raise ClusterExistsError(f"cluster '{cluster.id}' already exists in theme '{theme}'")
         log.clusters.append(cluster)
         path.write_text(log.model_dump_json(indent=2), encoding="utf-8")
         return
@@ -401,8 +479,9 @@ def append_cluster_entry(theme: str, cluster_id: str, entry: schemas.ClusterEntr
     :param cluster_id: The cluster the entry extends.
     :param entry: The entry to append.
     :param data_dir: Optional workspace-root override.
-    :raises WorkspaceError: If the log or cluster does not exist, or the
-        finding is already recorded in it.
+    :raises WorkspaceError: If the log or cluster does not exist.
+    :raises EntryAlreadyRecordedError: If the finding is already recorded in
+        the cluster, by id or by URL.
     """
     log = _read_cluster_log(theme, data_dir)
     cluster = next((c for c in log.clusters if c.id == cluster_id), None)
@@ -411,12 +490,73 @@ def append_cluster_entry(theme: str, cluster_id: str, entry: schemas.ClusterEntr
         raise WorkspaceError(f"cluster '{cluster_id}' does not exist in theme '{theme}'")
 
     if any(existing.finding_id == entry.finding_id for existing in cluster.entries):
-        raise WorkspaceError(f"finding '{entry.finding_id}' already in cluster '{cluster_id}'")
+        raise EntryAlreadyRecordedError(f"finding '{entry.finding_id}' already in cluster '{cluster_id}'")
     if any(existing.url == entry.url for existing in cluster.entries):
-        raise WorkspaceError(f"url '{entry.url}' already in cluster '{cluster_id}'")
+        raise EntryAlreadyRecordedError(f"url '{entry.url}' already in cluster '{cluster_id}'")
 
     cluster.entries.append(entry)
     (clusters_dir(data_dir) / cluster_filename(theme)).write_text(log.model_dump_json(indent=2), encoding="utf-8")
+
+
+def week_cluster_entry_count(week: str, data_dir: str | None = None) -> int:
+    """Count the cluster entries recorded for a week, across every theme's log.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The number of entries whose week is ``week``.
+    """
+    count = 0
+    for path in sorted(clusters_dir(data_dir).glob("*-clusters.json")):
+        log = schemas.ClusterLog.model_validate_json(path.read_text(encoding="utf-8"))
+        count += sum(1 for cluster in log.clusters for entry in cluster.entries if entry.week == week)
+    return count
+
+
+def purge_week(week: str, keep_evidence: bool, data_dir: str | None = None) -> Path:
+    """Set a week aside so it can be redone: the one sanctioned non-append edit.
+
+    Moves the week's weekly digest and grouping plan (and, unless
+    ``keep_evidence``, its whole evidence folder) into
+    ``_backup/<week>-<timestamp>/``, backs up every cluster log that has
+    entries for the week, then removes those entries — dropping clusters
+    left empty. Finding ids are reused when a week is harvested again, so
+    leaving old entries behind would point them at different findings.
+    A digest's sent marker stays: a redone week is never mailed twice.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param keep_evidence: Keep ``findings.json`` / ``rejected.json`` (a digest redo).
+    :param data_dir: Optional workspace-root override.
+    :returns: The backup directory.
+    """
+    backup = workspace_root(data_dir) / "_backup" / f"{week}-{datetime.now(UTC):%Y%m%dT%H%M%S}"
+    backup.mkdir(parents=True)
+
+    def _move(path: Path, relative: str) -> None:
+        if path.exists():
+            target = backup / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(path, target)
+
+    if keep_evidence:
+        _move(grouping_path(week, data_dir), f"evidence/{week}/grouping.json")
+    else:
+        _move(week_dir(week, data_dir), f"evidence/{week}")
+    _move(weekly_digest_dir(data_dir) / digest_filename(week), f"digests/weekly/{digest_filename(week)}")
+    _move(weekly_digest_dir(data_dir) / signals_filename(week), f"digests/weekly/{signals_filename(week)}")
+    _move(weekly_digest_dir(data_dir) / ledger_filename(week), f"digests/weekly/{ledger_filename(week)}")
+
+    for path in sorted(clusters_dir(data_dir).glob("*-clusters.json")):
+        log = schemas.ClusterLog.model_validate_json(path.read_text(encoding="utf-8"))
+        if not any(entry.week == week for cluster in log.clusters for entry in cluster.entries):
+            continue
+        (backup / "clusters").mkdir(exist_ok=True)
+        shutil.copy2(path, backup / "clusters" / path.name)
+        for cluster in log.clusters:
+            cluster.entries = [entry for entry in cluster.entries if entry.week != week]
+        log.clusters = [cluster for cluster in log.clusters if cluster.entries]
+        path.write_text(log.model_dump_json(indent=2), encoding="utf-8")
+
+    return backup
 
 
 # --------------------------------------------------------------------------- #
@@ -436,14 +576,104 @@ def write_weekly_digest(week: str, markdown: str, data_dir: str | None = None) -
     return write_once(weekly_digest_dir(data_dir) / digest_filename(week), markdown)
 
 
-def read_latest_weekly_digest(data_dir: str | None = None) -> str | None:
-    """Read the most recent weekly digest, for "last digest" context.
+def read_weekly_digest(week: str, data_dir: str | None = None) -> str | None:
+    """Read one week's pulse digest, if it was already composed.
 
+    :param week: A week label such as ``"2026-W24"``.
     :param data_dir: Optional workspace-root override.
-    :returns: The latest digest markdown, or ``None`` if none exists.
+    :returns: The digest markdown, or ``None`` when the week has no digest.
     """
-    digests = sorted(weekly_digest_dir(data_dir).glob("digest-*.md"))
-    return digests[-1].read_text(encoding="utf-8") if digests else None
+    path = weekly_digest_dir(data_dir) / digest_filename(week)
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def write_weekly_signals(week: str, markdown: str, data_dir: str | None = None) -> Path:
+    """Write a week's signals log — every finding, beside the short digest.
+
+    Derived from the clusters scoped through the week, so rewriting it is
+    harmless; unlike the digest it is not write-once.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param markdown: The log markdown.
+    :param data_dir: Optional workspace-root override.
+    :returns: The written path.
+    """
+    path = weekly_digest_dir(data_dir) / signals_filename(week)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(markdown, encoding="utf-8")
+    return path
+
+
+def write_weekly_ledger(ledger: schemas.LedgerFile, data_dir: str | None = None) -> Path:
+    """Write a week's ledger, beside its digest (write-once, like the digest).
+
+    :param ledger: The week's ledger.
+    :param data_dir: Optional workspace-root override.
+    :returns: The written path.
+    :raises WorkspaceError: If the ledger already exists.
+    """
+    return write_once(weekly_digest_dir(data_dir) / ledger_filename(ledger.week), ledger.model_dump_json(indent=2))
+
+
+def read_weekly_ledger(week: str, data_dir: str | None = None) -> schemas.LedgerFile | None:
+    """Read a week's ledger, if its digest was composed with one.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The ledger, or ``None`` when the week has none.
+    """
+    path = weekly_digest_dir(data_dir) / ledger_filename(week)
+    return schemas.LedgerFile.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def _sent_marker(digest_path: Path) -> Path:
+    return digest_path.with_suffix(".sent.json")
+
+
+def weekly_digest_sent(week: str, data_dir: str | None = None) -> bool:
+    """Check whether a week's digest was already emailed.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: ``True`` once the digest has a sent marker.
+    """
+    return _sent_marker(weekly_digest_dir(data_dir) / digest_filename(week)).exists()
+
+
+def mark_weekly_digest_sent(week: str, message_id: str, data_dir: str | None = None) -> Path:
+    """Record that a week's digest was emailed (write-once: a digest is sent once).
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param message_id: The provider's id for the sent message.
+    :param data_dir: Optional workspace-root override.
+    :returns: The marker path.
+    :raises WorkspaceError: If the digest was already marked sent.
+    """
+    marker = _sent_marker(weekly_digest_dir(data_dir) / digest_filename(week))
+    return write_once(marker, json.dumps({"sent_at": datetime.now(UTC).isoformat(), "message_id": message_id}))
+
+
+def monthly_digest_sent(month: str, data_dir: str | None = None) -> bool:
+    """Check whether a month's digest was already emailed.
+
+    :param month: A calendar month as ``"2026-07"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: ``True`` once the digest has a sent marker.
+    """
+    return _sent_marker(monthly_digest_dir(data_dir) / monthly_digest_filename(month)).exists()
+
+
+def mark_monthly_digest_sent(month: str, message_id: str, data_dir: str | None = None) -> Path:
+    """Record that a month's digest was emailed (write-once).
+
+    :param month: A calendar month as ``"2026-07"``.
+    :param message_id: The provider's id for the sent message.
+    :param data_dir: Optional workspace-root override.
+    :returns: The marker path.
+    :raises WorkspaceError: If the digest was already marked sent.
+    """
+    marker = _sent_marker(monthly_digest_dir(data_dir) / monthly_digest_filename(month))
+    return write_once(marker, json.dumps({"sent_at": datetime.now(UTC).isoformat(), "message_id": message_id}))
 
 
 def write_monthly_digest(month: str, markdown: str, data_dir: str | None = None) -> Path:
@@ -456,6 +686,17 @@ def write_monthly_digest(month: str, markdown: str, data_dir: str | None = None)
     :raises WorkspaceError: If the digest already exists.
     """
     return write_once(monthly_digest_dir(data_dir) / monthly_digest_filename(month), markdown)
+
+
+def read_monthly_digest(month: str, data_dir: str | None = None) -> str | None:
+    """Read one month's synthesis digest, if it was already composed.
+
+    :param month: A calendar month as ``"2026-07"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: The digest markdown, or ``None`` when the month has no digest.
+    """
+    path = monthly_digest_dir(data_dir) / monthly_digest_filename(month)
+    return path.read_text(encoding="utf-8") if path.exists() else None
 
 
 # --------------------------------------------------------------------------- #
@@ -520,6 +761,8 @@ def read_source_catalog(data_dir: str | None = None) -> schemas.SourceCatalog:
 
 
 __all__ = [
+    "ClusterExistsError",
+    "EntryAlreadyRecordedError",
     "WorkspaceError",
     "append_cluster",
     "append_cluster_entry",
@@ -529,28 +772,46 @@ __all__ = [
     "create_cluster_log",
     "current_window",
     "digest_filename",
+    "feed_snapshot_path",
     "findings_dir",
     "findings_path",
     "grouping_path",
     "list_weeks",
+    "mark_monthly_digest_sent",
+    "mark_weekly_digest_sent",
+    "monthly_digest_sent",
+    "ledger_filename",
+    "purge_week",
+    "read_weekly_ledger",
     "monthly_digest_dir",
     "monthly_digest_filename",
     "read_all_findings",
     "read_cluster_log",
     "read_grouping_plan",
+    "read_health_file",
+    "read_sources_file",
+    "read_feed_snapshot",
     "read_findings_file",
-    "read_latest_weekly_digest",
-    "read_recent_findings",
+    "read_monthly_digest",
     "read_rejected_file",
+    "read_weekly_digest",
     "read_source_catalog",
     "read_themes",
     "rejected_path",
+    "signals_filename",
     "weekly_digest_dir",
+    "weekly_digest_sent",
     "weekly_label",
+    "write_feed_snapshot",
+    "week_cluster_entry_count",
     "week_dir",
     "workspace_root",
     "write_findings_file",
     "write_grouping_plan",
+    "write_health",
+    "write_sources_file",
     "write_rejected_file",
     "write_weekly_digest",
+    "write_weekly_ledger",
+    "write_weekly_signals",
 ]

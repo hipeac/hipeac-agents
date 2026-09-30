@@ -10,84 +10,55 @@ from hipeac_agents.agents.vision_watch import workspace
 THEMES_YAML = """\
 themes:
   - theme: next-computing-paradigm
-    chapter: future-ahead
-    definition: >
-      The evolution toward distributed, on-demand computing across the
-      compute continuum.
+    description: Computing delivered on demand across a continuum of devices, edge and cloud.
+    questions: ["Are personal AI orchestrators emerging?"]
+    look_for: [edge orchestration, live migration]
     keywords: [digital envelopes, compute continuum, personal AI]
 
   - theme: physical-ai
-    chapter: technology-roadmap
-    definition: >
-      AI systems that directly interact with the physical world through
-      sensors, actuators, and robotic systems.
+    description: AI that senses and acts in the physical world through robots and machines.
+    look_for: [humanoid deployments, VLA models]
     keywords: [embodied AI, robotics, humanoids, self-driving]
 
   - theme: agentic-ai
-    chapter: technology-roadmap
-    definition: >
-      Autonomous AI systems acting as agents with delegated authority.
+    description: AI systems acting as agents with delegated authority.
     keywords: [agents, MCP, A2A, agent communication protocols]
 """
 
 SOURCE_CATALOG_YAML = """\
-meta:
-    version: 6
-    company_slot_cap: 25
+classes:
+    press: {about: Journalism reporting on others' news., primary: false}
+    analysis: {about: Independent expert analysis., primary: false}
+    eu-institutions: {about: EU-level bodies and programmes.}
+    programmes: {about: Governments and public funders.}
+    foresight: {about: Think tanks and foresight units.}
 
 sources:
-    - id: robot-report
-      name: Robot Report
-      url: "https://example.com/robot-report"
-      feed_url: "https://example.com/robot-report/feed"
-      class: aggregators
-      themes: [physical-ai]
-      region: global
-      tier: 2
-      independence: high
-      stream: evidence
-
-    - id: fabricated-knowledge
-      name: Fabricated Knowledge
-      url: "https://example.com/fk"
-      class: capital
-      themes: [new-hardware]
-      region: global
-      tier: 4
-      independence: high
-      stream: evidence
-      newsletter: true
-
-    - id: eu-fund
-      name: EU Fund
-      url: "https://example.com/eu"
-      class: eu-uptake
-      themes: [physical-ai]
-      region: eu
-      tier: 2
-      independence: low
-      stream: evidence
-
-    - id: darpa-news
-      name: DARPA News
-      url: "https://example.com/darpa"
-      class: programmes
-      themes: [physical-ai, agentic-ai]
-      region: global
-      tier: 2
-      independence: high
-      stream: evidence
-
-    - id: signals-watch
-      name: Signals Watch
-      url: "https://example.com/signals"
-      class: foresight
-      themes: []
-      region: global
-      tier: 3
-      independence: med
-      stream: signals
+    press:
+        - {id: robot-report, name: Robot Report, url: "https://example.com/robot-report",
+           feed_url: "https://example.com/robot-report/feed"}
+    analysis:
+        - {id: fabricated-knowledge, name: Fabricated Knowledge, url: "https://example.com/fk",
+           senders: [fk@substack.com]}
+    eu-institutions:
+        - {id: eu-fund, name: EU Fund, url: "https://example.com/eu", region: eu}
+    programmes:
+        - {id: darpa-news, name: DARPA News, url: "https://example.com/darpa"}
+    foresight:
+        - {id: signals-watch, url: "https://example.com/signals"}
 """
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path_factory, monkeypatch):
+    """Point the default workspace at a throwaway dir, never the ``.env`` one.
+
+    ``./run`` loads ``.env``, whose data dir is the live workspace; a test that
+    reads the default workspace (or a CLI run that rewrites it) must not reach it.
+    """
+    from hipeac_agents.agents.vision_watch import settings as watch_settings
+
+    monkeypatch.setattr(watch_settings, "DATA_DIR", str(tmp_path_factory.mktemp("default-workspace")))
 
 
 @pytest.fixture

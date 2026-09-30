@@ -15,10 +15,13 @@ class SourceOutcome(BaseModel):
     """
 
     source_id: str
-    status: str  # collected | blocked | empty | failed
+    status: str  # collected | blocked | empty | failed | skipped
     verified: int = 0
     rejected: int = 0
     detail: str = ""
+    # Channel observations the source-health check reads:
+    # feed_fetch_failed | feed_empty | feed_truncated.
+    flags: list[str] = []
 
 
 class ClusterReport(BaseModel):
@@ -59,6 +62,9 @@ class VisionWatchState(BaseModel):
 
     digest_markdown: str = ""
     digest_sent: bool = False
-    skip_send: bool = False
+
+    # Sending is opt-in (CLI ``--send``): the board list is the real audience,
+    # so a run that forgets the flag writes the digest and mails no one.
+    send: bool = False
 
     errors: list[str] = []

@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from hipeac_agents.services.crawl import FirecrawlCrawl
+from hipeac_agents.services.crawl import CachedCrawl, CrawlClient, FirecrawlCrawl, fetch_feed_direct
 from hipeac_agents.services.mail import AgentMailMail, markdown_to_html
 
 
@@ -29,10 +29,12 @@ class FakeFirecrawlSdk:
         return self.search_data
 
 
-def fake_document(markdown="# Title\n\nBody text.", title="Example headline", url="https://example.com/a"):
+def fake_document(
+    markdown="# Title\n\nBody text.", title="Example headline", url="https://example.com/a", source_url=None
+):
     return SimpleNamespace(
         markdown=markdown,
-        metadata=SimpleNamespace(title=title, sourceURL=url, statusCode=200),
+        metadata=SimpleNamespace(title=title, url=url, source_url=source_url or url, statusCode=200),
     )
 
 
@@ -48,6 +50,15 @@ class TestFirecrawlScrape:
         assert "Body text." in result.markdown
         assert result.status_code == 200
         assert sdk.scrape_calls[0][1]["formats"] == ["markdown"]
+
+    async def test_scrape_records_where_redirects_ended(self):
+        """Regression: the requested URL (a newsletter's tracker) was recorded instead of the page reached."""
+        document = fake_document(url="https://example.com/story", source_url="https://substack.com/redirect/abc")
+        crawl = FirecrawlCrawl(FakeFirecrawlSdk(document=document))
+
+        result = await crawl.scrape("https://substack.com/redirect/abc")
+
+        assert result.url == "https://example.com/story"
 
     async def test_scrape_failure_returns_none(self):
         crawl = FirecrawlCrawl(FakeFirecrawlSdk(error=RuntimeError("boom")))
@@ -91,6 +102,90 @@ class TestFirecrawlSearch:
         crawl = FirecrawlCrawl(FakeFirecrawlSdk(error=RuntimeError("rate limit")))
 
         assert await crawl.search("anything") == []
+
+
+class FakeResponse:
+    """Minimal stand-in for what ``urllib.request.urlopen`` returns."""
+
+    def __init__(self, payload: bytes):
+        self.payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def read(self) -> bytes:
+        return self.payload
+
+
+FEED_XML = b"<rss><channel><item><link>https://example.com/a</link></item></channel></rss>"
+
+
+class TestCrawlProtocol:
+    """Every shipped provider must satisfy the protocol nodes call against.
+
+    A missing method surfaces as an ``AttributeError`` inside a gathered task
+    and is swallowed into a nondescript failed source outcome, so the suite
+    has to assert conformance rather than wait for a harvest to reveal it.
+    """
+
+    def test_firecrawl_provider_implements_the_protocol(self):
+        assert isinstance(FirecrawlCrawl(FakeFirecrawlSdk()), CrawlClient)
+
+    def test_cache_wrapper_implements_the_protocol(self, tmp_path):
+        assert isinstance(CachedCrawl(FirecrawlCrawl(FakeFirecrawlSdk()), str(tmp_path)), CrawlClient)
+
+
+class TestFeedFetch:
+    async def test_returns_the_raw_document(self, monkeypatch):
+        import urllib.request
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: FakeResponse(FEED_XML))
+
+        assert await fetch_feed_direct("https://example.com/feed.xml") == FEED_XML.decode()
+
+    async def test_failure_returns_none(self, monkeypatch):
+        import urllib.request
+
+        def boom(*args, **kwargs):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+
+        assert await fetch_feed_direct("https://example.com/feed.xml") is None
+
+    async def test_provider_fetches_the_feed_without_the_sdk(self, monkeypatch):
+        import urllib.request
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: FakeResponse(FEED_XML))
+        sdk = FakeFirecrawlSdk()
+
+        xml = await FirecrawlCrawl(sdk).fetch_feed("https://example.com/feed.xml")
+
+        assert xml == FEED_XML.decode()
+        assert not sdk.scrape_calls  # A feed costs no Firecrawl credit.
+
+    async def test_cache_wrapper_never_caches_a_feed(self, monkeypatch, tmp_path):
+        import urllib.request
+
+        monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **kw: FakeResponse(FEED_XML))
+        inner = FirecrawlCrawl(FakeFirecrawlSdk())
+        calls: list[str] = []
+
+        async def counting_fetch(url: str) -> str | None:
+            calls.append(url)
+            return FEED_XML.decode()
+
+        monkeypatch.setattr(inner, "fetch_feed", counting_fetch)
+        crawl = CachedCrawl(inner, str(tmp_path))
+
+        await crawl.fetch_feed("https://example.com/feed.xml")
+        await crawl.fetch_feed("https://example.com/feed.xml")
+
+        # A cached feed would serve last week's entries into this week's window.
+        assert len(calls) == 2
 
 
 class FakeAgentMailSdk:

@@ -6,11 +6,7 @@ folder maps, and write-once / append-only rules onto these primitives from
 their own ``workspace.py`` (e.g. ``hipeac_agents.agents.vision_watch.workspace``).
 """
 
-import json
 from pathlib import Path
-from typing import Any
-
-import yaml
 
 
 class WorkspaceError(Exception):
@@ -31,21 +27,3 @@ def write_once(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
-
-
-def read_json(path: Path) -> dict[str, Any]:
-    """Read and parse a JSON workspace file.
-
-    :param path: The file to read.
-    :returns: The parsed document.
-    """
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def read_yaml(path: Path) -> dict[str, Any]:
-    """Read and parse a YAML workspace file.
-
-    :param path: The file to read.
-    :returns: The parsed document.
-    """
-    return yaml.safe_load(path.read_text(encoding="utf-8"))  # type: ignore[no-any-return]

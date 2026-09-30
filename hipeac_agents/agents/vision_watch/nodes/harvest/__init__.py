@@ -14,24 +14,22 @@ LLM-JUDGEMENT CALLS — review before the first live run:
 
 1. ``CandidateList`` / ``CANDIDATE_EXTRACTION`` — extracting candidate items
    from a scraped page or newsletter body.
-2. ``GateVerdict`` / ``GATE`` — merged verification gate: themes, tier, title.
+2. ``GateVerdict`` / ``GATE`` — merged verification gate: themes, significance, title.
 5. ``NearMatchGroups`` / ``NEAR_MATCH`` — same event under a different URL
    is one finding, not two.
 
 Boundaries: collect, verify, and record only — no grouping, no convergence
-judgement, no composing. Works the evidence stream only.
+judgement, no composing.
 """
 
 from .gates import (  # noqa: F401
     build_due_list,
-    cap_tier,
     dedupe_rejects,
     duplicate_gate,
     extract_links,
     find_id,
     headline_in_body,
     kept_findings,
-    keyword_hits,
     parse_iso_date,
     pick_resample,
     window_gate,
@@ -51,7 +49,6 @@ __all__ = [
     "NearMatchGroups",
     "GateVerdict",
     "build_due_list",
-    "cap_tier",
     "dedupe_rejects",
     "duplicate_gate",
     "extract_links",
@@ -59,7 +56,6 @@ __all__ = [
     "harvest_node",
     "headline_in_body",
     "kept_findings",
-    "keyword_hits",
     "parse_iso_date",
     "pick_resample",
     "window_gate",

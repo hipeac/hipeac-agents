@@ -38,12 +38,38 @@ class FakeLLM:
         self.calls.append((schema, prompt))
         if schema is str:
             return "In brief text."
-        if getattr(schema, "__name__", "") == "InBrief":
-            return schema(text="In brief text.")
         handler = self.handlers.get(schema)
+        if handler is None and isinstance(schema, type):
+            # Output models built per run (e.g. the monthly's narrowed ids) subclass the registered one.
+            handler = next((h for t, h in self.handlers.items() if isinstance(t, type) and issubclass(schema, t)), None)
+        if handler is None and getattr(schema, "__name__", "") == "GateBatch":
+            return self._batch_from_single_verdicts(schema, prompt)
+        if handler is None and getattr(schema, "__name__", "") == "TriageVerdict":
+            return schema(items=[])  # keep everything unless a test scripts triage
         if handler is None:
             raise AssertionError(f"no scripted handler for {schema.__name__}")
         return handler(prompt) if callable(handler) else handler
+
+    def _batch_from_single_verdicts(self, schema, prompt: str):
+        """Answer a verdict batch with the scripted single-candidate verdict handler.
+
+        Each candidate is judged on the shared prompt plus its own section, so
+        handlers that look at the candidate's text keep working.
+        """
+        import re
+
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import IndexedVerdict
+
+        single = next((h for t, h in self.handlers.items() if getattr(t, "__name__", "") == "GateVerdict"), None)
+        if single is None:
+            raise AssertionError("no scripted handler for GateVerdict")
+        head, *sections = re.split(r"\n\n(?=Candidate \d+:\n)", prompt)
+        verdicts = []
+        for section in sections:
+            index = int(re.match(r"Candidate (\d+):", section).group(1))
+            verdict = single(f"{head}\n\n{section}") if callable(single) else single
+            verdicts.append(IndexedVerdict(index=index, **verdict.model_dump()))
+        return schema(verdicts=verdicts)
 
 
 class FakeCrawl:
@@ -62,6 +88,7 @@ class FakeCrawl:
         self.feeds = feeds or {}
         self.scrape_calls = []
         self.search_calls = []
+        self.search_ranges = []
         self.feed_calls = []
 
     async def scrape(self, url: str, fresh: bool = False):
@@ -70,8 +97,9 @@ class FakeCrawl:
             return None
         return ScrapeResult(url=url, title=self.pages[url][0], markdown=self.pages[url][1])
 
-    async def search(self, query: str, limit: int = 5):
+    async def search(self, query: str, limit: int = 5, since=None, until=None):
         self.search_calls.append(query)
+        self.search_ranges.append((since, until))
         if self.search_hits:
             return self.search_hits[:limit]
         return [SearchHit(url=f"https://example.com/{i}", title=query) for i in range(limit)]
@@ -121,6 +149,42 @@ def make_grouping_handler(assignments: list[dict]) -> callable:
     from hipeac_agents.agents.vision_watch.nodes.cluster import GroupingPlan
 
     return lambda prompt: GroupingPlan.model_validate({"assignments": assignments})
+
+
+def make_story_handler(headline: str = "Europe builds compute") -> callable:
+    """Build a WeeklyDigest handler that writes one full story per theme with candidates.
+
+    Behaves like a well-mannered model: each story takes the theme's first
+    candidate, tags it with the theme's first open question (NEW when it has
+    none) and cites its first finding; the opener cites the first finding overall.
+    """
+    import re
+
+    from hipeac_agents.agents.vision_watch.nodes.digest import DigestItem, WeeklyDigest
+
+    def handler(prompt: str):
+        items, first = [], None
+        for block in prompt.split('THEME "')[1:]:
+            theme = block.split('"', 1)[0]
+            keys = re.findall(r"^(S\d+) Story", block, flags=re.M)
+            refs = re.findall(r"^  - (F\d+):", block, flags=re.M)
+            questions = re.findall(r"^Open question (\S+):", block, flags=re.M)
+            if keys and refs:
+                first = first or refs[0]
+                items.append(
+                    DigestItem(
+                        story=keys[0],
+                        question=questions[0] if questions else "NEW",
+                        lean="moving forward",
+                        title=f"Story in {theme}",
+                        text=f"Something moved: [a finding]({refs[0]}).",
+                        brief=False,
+                    )
+                )
+        opener = f"The week's news is in one theme: [this]({first})." if first else "Nothing moved."
+        return WeeklyDigest(headline=headline, this_week=opener, items=items)
+
+    return handler
 
 
 def structured_model(cls: type[BaseModel], **data) -> BaseModel:
