@@ -54,12 +54,24 @@ class TestMonthWeeks:
     def test_july_2026(self):
         assert monthly_node_mod.month_weeks("2026-07") == {f"2026-W{week}" for week in range(27, 32)}
 
-    def test_next_months_first_friday_is_not_included(self):
-        """Regression: September 2026 also took W40, which closes on 2 October."""
+    def test_next_months_first_week_is_not_included(self):
+        """Regression: September 2026 also took W40, which runs into October."""
         assert monthly_node_mod.month_weeks("2026-09") == {"2026-W36", "2026-W37", "2026-W38", "2026-W39"}
 
+    def test_week_across_two_months(self):
+        """Monday 28 September to Sunday 4 October: four of its days are in October."""
+        assert "2026-W40" in monthly_node_mod.month_weeks("2026-10")
+        assert "2026-W40" not in monthly_node_mod.month_weeks("2026-09")
+
     def test_month_starting_on_a_friday(self):
-        assert min(monthly_node_mod.month_weeks("2026-05")) == "2026-W18"
+        """1 May 2026 is a Friday: that week's Thursday is in April."""
+        assert min(monthly_node_mod.month_weeks("2026-05")) == "2026-W19"
+        assert "2026-W18" in monthly_node_mod.month_weeks("2026-04")
+
+    def test_every_week_of_a_year_in_exactly_one_month(self):
+        weeks = [week for month in range(1, 13) for week in monthly_node_mod.month_weeks(f"2026-{month:02d}")]
+
+        assert len(weeks) == len(set(weeks)) == 53
 
 
 def _month(*signals: tuple[str, LedgerEntry]) -> list[LedgerFile]:

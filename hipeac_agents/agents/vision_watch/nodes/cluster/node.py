@@ -98,7 +98,6 @@ def _entry_from_finding(week: str, finding: Finding, catalog: schemas.SourceCata
         note=finding.summary,
         url=finding.url,
         significance=finding.significance,
-        direction=finding.direction,
         horizon=finding.horizon,
     )
 

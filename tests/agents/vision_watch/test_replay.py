@@ -71,14 +71,14 @@ def recorded(data_dir, monkeypatch):
 
 
 def test_week_window():
-    assert replay.week_window(WEEK) == (date(2026, 9, 19), date(2026, 9, 25))
+    assert replay.week_window(WEEK) == (date(2026, 9, 21), date(2026, 9, 27))
 
 
 def test_only_relevance_rejects_are_replayed(recorded):
     candidates, kept = replay.recorded_candidates(WEEK)
 
     assert [(c.source_id, c.was) for c in candidates] == [("robot-report", "finding"), ("darpa-news", "off_theme")]
-    assert candidates[1].candidate.date == "2026-09-25", "rejects passed the window check: dated Friday"
+    assert candidates[1].candidate.date == "2026-09-27", "rejects passed the window check: dated the week's last day"
     assert [r.reason for r in kept] == ["out_of_window"]
 
 

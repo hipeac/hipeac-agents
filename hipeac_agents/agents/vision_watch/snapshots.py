@@ -1,7 +1,7 @@
 """Daily feed snapshots: keep a busy feed's whole week.
 
-A feed carries only its newest entries; by Friday a high-volume feed no
-longer reaches back to Saturday. ``snapshot-feeds`` runs daily, captures the
+A feed carries only its newest entries; by Sunday a high-volume feed no
+longer reaches back to Monday. ``snapshot-feeds`` runs daily, captures the
 open week's entries, and the harvest merges them with the live feed. Pure
 fetch-and-parse: no LLM, no crawl provider.
 """

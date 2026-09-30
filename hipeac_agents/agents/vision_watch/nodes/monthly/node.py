@@ -8,6 +8,7 @@ from typing import Any
 
 from hipeac_agents.agents.vision_watch import settings as watch_settings
 from hipeac_agents.agents.vision_watch import workspace
+from hipeac_agents.agents.vision_watch.cadence import weekly_label
 from hipeac_agents.agents.vision_watch.nodes.digest.node import NEW_TOPIC, resolve_citations
 from hipeac_agents.agents.vision_watch.schemas import LedgerEntry, LedgerFile, ThemeDef
 from hipeac_agents.services.factory import Services
@@ -35,20 +36,22 @@ _LINK = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 
 
 def month_weeks(month: str) -> set[str]:
-    """Week labels whose closing Friday falls in a calendar month.
+    """Week labels of the weeks with most of their days in a calendar month.
+
+    A week belongs to the month of its Thursday, as ISO does for years, so a
+    week is never split between two months.
 
     :param month: A calendar month as ``"YYYY-MM"``.
     :returns: Week labels such as ``{"2026-W27", ..., "2026-W31"}``.
     """
     year, mon = (int(part) for part in month.split("-"))
     first = date(year, mon, 1)
-    friday = first + timedelta(days=(4 - first.weekday()) % 7)
+    thursday = first + timedelta(days=(3 - first.weekday()) % 7)
     weeks: set[str] = set()
 
-    while friday.month == mon:
-        iso = friday.isocalendar()
-        weeks.add(f"{iso.year}-W{iso.week:02d}")
-        friday += timedelta(days=7)
+    while thursday.month == mon:
+        weeks.add(weekly_label(thursday))
+        thursday += timedelta(days=7)
 
     return weeks
 

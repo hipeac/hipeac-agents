@@ -12,10 +12,11 @@ import asyncio
 import math
 import shutil
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from hipeac_agents.agents.vision_watch import workspace
+from hipeac_agents.agents.vision_watch.cadence import week_window
 from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node
 from hipeac_agents.agents.vision_watch.nodes.harvest import prompts
 from hipeac_agents.agents.vision_watch.nodes.harvest.channels import PREVERDICT_PICK, gate_candidates
@@ -58,17 +59,6 @@ class RecordedCandidate:
     was: str  # "finding", or the old rejection reason
 
 
-def week_window(week: str) -> tuple[date, date]:
-    """Return the Saturday–Friday window a week label names.
-
-    :param week: A week label such as ``"2026-W39"``.
-    :returns: ``(saturday, friday)``.
-    """
-    year, number = week.split("-W")
-    friday = date.fromisocalendar(int(year), int(number), 5)
-    return friday - timedelta(days=6), friday
-
-
 def weeks_between(first: str, last: str) -> list[str]:
     """List the recorded weeks from ``first`` to ``last`` inclusive.
 
@@ -83,14 +73,14 @@ def recorded_candidates(week: str) -> tuple[list[RecordedCandidate], list[Reject
     """Read what a week's old gate saw.
 
     Rejects carry no date; they passed the window check when first seen, so
-    they are dated the week's Friday, as the old gate recorded undated items.
+    they are dated the week's last day.
 
     :param week: The week label.
     :returns: ``(candidates to replay, rejects kept as they were)``.
     """
     findings_file = workspace.read_findings_file(week)
     rejected_file = workspace.read_rejected_file(week)
-    friday = week_window(week)[1].isoformat()
+    last_day = week_window(week)[1].isoformat()
 
     replay = [
         RecordedCandidate(
@@ -106,7 +96,7 @@ def recorded_candidates(week: str) -> tuple[list[RecordedCandidate], list[Reject
             replay.append(
                 RecordedCandidate(
                     item.source_id,
-                    CandidateItem(title=item.claimed_title, url=item.url, date=friday, summary=item.summary),
+                    CandidateItem(title=item.claimed_title, url=item.url, date=last_day, summary=item.summary),
                     item.reason,
                 )
             )

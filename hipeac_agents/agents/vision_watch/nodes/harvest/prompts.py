@@ -63,10 +63,7 @@ Give each candidate its own verdict, judged on its own:
 using each theme's description, open questions and what to look for. Do not
 stretch. Possibly empty. A candidate may fit several.
 
-2. DIRECTION and HORIZON: does it accelerate the trend the Vision describes
-for that theme ("strengthens"), slow or contradict it ("weakens"), or open
-something the Vision does not yet cover ("new"); and when do its consequences
-land (now, 1-2y, 3-5y)?
+2. HORIZON: when do its consequences land (now, 1-2y, 3-5y)?
 
 3. FORWARD NOTE: one line (max 160 characters) on what this could change for
 computing in Europe, and when. Concrete, no hype.

@@ -101,8 +101,8 @@ def window_gate(item_date: date | None, window_start: date, window_end: date) ->
     """Check the item is dated within the harvest window.
 
     :param item_date: The candidate's date, or ``None`` if unknown.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :returns: ``True`` when inside the window; unknown dates stay in.
     """
     if item_date is None:

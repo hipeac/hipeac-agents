@@ -19,7 +19,7 @@ from hipeac_agents.services.factory import Services
 from tests.agents.vision_watch._fakes import FakeCrawl, FakeLLM, make_candidate_handler, make_gate_handler
 
 
-WINDOW = (date(2026, 9, 19), date(2026, 9, 25))
+WINDOW = (date(2026, 9, 21), date(2026, 9, 27))  # 2026-W39, Monday–Sunday
 
 
 def _listing_entry(n: int, paper_id: str, title: str) -> str:
@@ -195,7 +195,7 @@ class TestFeedFallbacks:
         """Regression (baseline B24): busy feeds lost the start of the week."""
         source = _source(feed_url="https://example.com/feed.xml")
         xml = _rss(("Humanoid deployed", "https://example.com/item", "Wed, 23 Sep 2026 10:00:00 GMT"))
-        earlier = CandidateItem(title="Robotics arm shipped", url="https://example.com/early", date="2026-09-19")
+        earlier = CandidateItem(title="Robotics arm shipped", url="https://example.com/early", date="2026-09-21")
         crawl = FakeCrawl(
             feeds={"https://example.com/feed.xml": xml},
             pages={"https://example.com/item": ("H", "t"), "https://example.com/early": ("Robotics arm shipped", "t")},
@@ -225,7 +225,7 @@ class TestSnapshotFeeds:
         monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.DATA_DIR", data_dir)
         feeds = {
             "https://example.com/robot-report/feed": _rss(
-                ("A", "https://example.com/a", "Sat, 19 Sep 2026 10:00:00 GMT")
+                ("A", "https://example.com/a", "Mon, 21 Sep 2026 10:00:00 GMT")
             )
         }
 

@@ -35,17 +35,20 @@ from .models import CandidateItem
 
 logger = logging.getLogger(__name__)
 
-# Candidates per source that reach the full verdict each week. The source cap
-# keeps at most 4 findings per source, so a few more leave the verdict room.
+# Candidates per source that reach the full verdict each week.
 PREVERDICT_PICK = 8
+
+# Newsletters report news a few days late: an item counts in the week its
+# newsletter arrived when it was published at most this many days before.
+NEWSLETTER_GRACE_DAYS = 7
 
 
 def _days_outside(item_date: date, window_start: date, window_end: date) -> int:
     """Days a date falls outside the harvest window (0 when inside).
 
     :param item_date: The item's publication date.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :returns: Distance in days; 0 when inside the window.
     """
     if window_start <= item_date <= window_end:
@@ -79,14 +82,16 @@ def _pre_gate(
 
     :param candidate: The candidate.
     :param source_id: The source it came from.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :param prior: All recorded findings files, for duplicate detection.
     :returns: The rejection, or ``None`` when the candidate passes.
     """
     item_date = parse_iso_date(candidate.date) or parse_iso_date(candidate.summary)
 
-    if not window_gate(item_date, window_start, window_end):
+    if not window_gate(item_date, window_start, window_end) and not _arrived_late(
+        item_date, candidate, window_start, window_end
+    ):
         days_out = _days_outside(item_date, window_start, window_end)
         detail = f"near_window ({days_out}d outside) published {item_date.isoformat()}" if days_out <= 7 else ""
         return _reject(candidate, source_id, "out_of_window", detail)
@@ -95,6 +100,22 @@ def _pre_gate(
         return _reject(candidate, source_id, "duplicate")
 
     return None
+
+
+def _arrived_late(item_date: date | None, candidate: CandidateItem, window_start: date, window_end: date) -> bool:
+    """Tell whether a newsletter item from before the week counts in it by arrival.
+
+    :param item_date: The item's own date.
+    :param candidate: The candidate, with ``received`` set when it came from a newsletter.
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
+    :returns: ``True`` when its newsletter arrived in the week, at most
+        ``NEWSLETTER_GRACE_DAYS`` after the item was published.
+    """
+    received = parse_iso_date(candidate.received)
+    if item_date is None or received is None or not window_gate(received, window_start, window_end):
+        return False
+    return item_date < window_start and (received - item_date).days <= NEWSLETTER_GRACE_DAYS
 
 
 async def gate_candidates(
@@ -282,7 +303,6 @@ def _judged(
             summary=verdict.summary or candidate.summary or verdict.title_detail,
             significance=verdict.significance,
             access_method=access_method,
-            direction=verdict.direction,
             horizon=verdict.horizon,
             forward_note=verdict.forward_note,
         ),
@@ -291,16 +311,20 @@ def _judged(
 
 
 def _dated_by_message(candidate: CandidateItem, message: Any) -> CandidateItem:
-    """Date an undated newsletter item by its message: the email itself is in-window evidence.
+    """Record when a newsletter item arrived, and date it by its message when it has no date.
+
+    The email itself is in-window evidence: an undated item takes its date,
+    and a dated one keeps its own date with the arrival beside it.
 
     :param candidate: The candidate extracted from the message.
     :param message: The inbox message it came from.
-    :returns: The candidate, dated when it had no date.
+    :returns: The candidate with ``received`` set, and dated when it had no date.
     """
     stamp = getattr(message, "timestamp", None) or getattr(message, "created_at", None)
-    if candidate.date or stamp is None:
+    if stamp is None:
         return candidate
-    return candidate.model_copy(update={"date": stamp.date().isoformat()})
+    received = stamp.date().isoformat()
+    return candidate.model_copy(update={"received": received, "date": candidate.date or received})
 
 
 _FEED_MARKUP = re.compile(r"<[^>]+>")
@@ -364,8 +388,8 @@ def parse_feed_entries(xml: str, window_start: date, window_end: date) -> list[C
     parsing costs nothing, and a busy feed's week can run past any fixed cap.
 
     :param xml: The raw feed document.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :returns: Candidates with real links and publish dates, in-window only.
     """
     import feedparser
@@ -413,7 +437,7 @@ async def harvest_feed_source(
     judgement call. Entries carry real links and publish dates; each still
     goes through the full verification gate (cached item scrape + merged
     gate call). Entries captured earlier in the week by ``snapshot-feeds``
-    are merged in, so a busy feed that no longer reaches back to Saturday
+    are merged in, so a busy feed that no longer reaches back to Monday
     still yields its whole week.
 
     A feed that cannot be fetched, or that is empty, falls back to scraping
@@ -423,8 +447,8 @@ async def harvest_feed_source(
     :param ctx: The harvest context holding the LLM runners.
     :param services: The wired service clients.
     :param source: The due catalog source with a ``feed_url``.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :param prior: Recent findings files, for duplicate detection.
     :param themes: The watched themes.
     :param snapshot: This week's entries captured earlier by ``snapshot-feeds``.
@@ -499,8 +523,8 @@ def parse_arxiv_listing(html: str, window_start: date, window_end: date) -> list
     dated by the day they were announced.
 
     :param html: The listing page.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :returns: Candidates with the abstract-page URL, title and announcement date.
     """
     items: list[CandidateItem] = []
@@ -554,8 +578,8 @@ async def harvest_arxiv_source(
     :param ctx: The harvest context holding the LLM runners.
     :param services: The wired service clients.
     :param source: The due catalog source with an ``arxiv`` category.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :param prior: All recorded findings files, for duplicate detection.
     :param themes: The themes.
     :returns: ``(findings, rejected, outcome)`` for the source.
@@ -642,8 +666,8 @@ async def harvest_web_source(
     :param ctx: The harvest context holding the LLM runners.
     :param services: The wired service clients.
     :param source: The due catalog source.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :param prior: Recent findings files, for duplicate detection.
     :param themes: The watched themes.
     :returns: ``(findings, rejected, outcome)`` for the source.
@@ -704,8 +728,8 @@ async def harvest_newsletter_source(
     :param services: The wired service clients.
     :param source: The catalog source the messages were attributed to.
     :param messages: The attributed inbox messages for this source.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :param prior: Recent findings files, for duplicate detection.
     :param themes: The watched themes.
     :returns: ``(findings, rejected, outcome)`` for the source.
@@ -766,8 +790,8 @@ async def harvest_inbox_unattributed(
     :param ctx: The harvest context holding the LLM runners.
     :param services: The wired service clients.
     :param messages: Unattributed inbox messages.
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :param prior: Recent findings files, for duplicate detection.
     :param themes: The watched themes.
     :returns: ``(findings, rejected, outcome)`` for the inbox fallback.
@@ -953,8 +977,8 @@ async def harvest_sweep(
     :param ctx: The harvest context holding the LLM runners.
     :param services: The wired service clients.
     :param themes: The watched themes, in config order (one search each).
-    :param window_start: Window start (Saturday).
-    :param window_end: Window end (Friday).
+    :param window_start: Window start (Monday).
+    :param window_end: Window end (Sunday).
     :param prior: Recent findings files, for duplicate detection.
     :returns: ``(findings, rejected, outcome)`` for the sweep.
     """
@@ -1105,7 +1129,7 @@ def _window_start_dt(day: date) -> datetime:
 def _window_end_dt(day: date) -> datetime:
     """Convert a window-end day to an exclusive UTC datetime for inbox queries.
 
-    :param day: The window's closing Friday.
+    :param day: The window's closing Sunday.
     :returns: Midnight UTC of the following day (exclusive upper bound).
     """
     return datetime.combine(day + timedelta(days=1), time.min, tzinfo=UTC)

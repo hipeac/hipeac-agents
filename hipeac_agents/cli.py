@@ -2,10 +2,10 @@
 
 Usage::
 
-    ./run python -m hipeac_agents weekly-harvest [--redo]
-    ./run python -m hipeac_agents weekly-digest [--send] [--redo]
+    ./run python -m hipeac_agents weekly-harvest [--redo]     # Monday early morning, for the week to Sunday
+    ./run python -m hipeac_agents weekly-digest [--send] [--redo]  # right after the harvest
     ./run python -m hipeac_agents monthly-digest --month 2026-07 [--send]
-    ./run python -m hipeac_agents simulate-harvest --on 2026-06-26 [--limit 4] [--skip-sweep]
+    ./run python -m hipeac_agents simulate-harvest --on 2026-06-24 [--limit 4] [--skip-sweep]
     ./run python -m hipeac_agents snapshot-feeds        # daily: keep busy feeds' whole week
     ./run python -m hipeac_agents replay-gate --from 2026-W26 --to 2026-W39 [--dry-run]
     ./run python -m hipeac_agents replay-gate --apply <replay folder>
@@ -53,8 +53,8 @@ def _initial_state(
 ) -> VisionWatchState:
     """Build the initial graph state for a run.
 
-    :param week: The week label (the ISO week of the closing Friday).
-    :param window: The ``(saturday, friday)`` window the run targets.
+    :param week: The week label (its ISO week).
+    :param window: The ``(monday, sunday)`` window the run targets.
     :param source_limit: Cap on the number of due sources checked.
     :param source_only: Only check these source ids.
     :param skip_sweep: Drop the general sweep (cheap partial runs).
@@ -77,20 +77,21 @@ def _initial_state(
 def _target_window(on: date | None = None) -> tuple[date, date]:
     """Pick the weekly window a run targets.
 
-    Without a date, the most recently closed Saturday–Friday window: a run on
-    a Saturday targets the week that closed the day before, never the week
-    that has just opened (harvesting an open week writes partial, write-once
-    evidence). With a date, the window containing it.
+    Without a date, the most recently closed Monday–Sunday window: a run on
+    a Monday targets the week that closed the day before, never the week that
+    has just opened (harvesting an open week writes partial, write-once
+    evidence). With a date, the window containing it; a week closes at the
+    end of its Sunday.
 
     :param on: The ``--on`` date, if given.
-    :returns: The ``(saturday, friday)`` window.
+    :returns: The ``(monday, sunday)`` window.
     :raises ValueError: If the window has not closed yet.
     """
     if on is None:
         return cadence.last_closed_window(date.today())
 
     window = cadence.current_window(on)
-    if window[1] > date.today():
+    if window[1] >= date.today():
         raise ValueError(f"the week containing {on.isoformat()} closes on {window[1].isoformat()}, not yet")
     return window
 
@@ -231,7 +232,7 @@ async def _run(
     keeps every Firecrawl markdown).
 
     :param nodes: The nodes to run, in order.
-    :param window: The targeted ``(saturday, friday)`` window; monthly runs have none.
+    :param window: The targeted ``(monday, sunday)`` window; monthly runs have none.
     :param data_dir: Optional workspace-root override (``--data-dir``).
     :param source_limit: Cap on the number of due sources checked.
     :param source_only: Only check these source ids.
@@ -389,7 +390,7 @@ async def main(argv: list[str] | None = None) -> int:
         return await _replay_gate(args.first, args.last, args.dry_run, args.apply, args.data_dir)
 
     if args.command == "simulate-harvest" and not args.on:
-        parser.error("simulate-harvest requires --on YYYY-MM-DD (e.g. --on 2026-06-26 for a Friday-evening run)")
+        parser.error("simulate-harvest requires --on YYYY-MM-DD, any day of the week (e.g. --on 2026-06-24)")
         return 2
 
     on = date.fromisoformat(args.on) if args.on else None
@@ -400,8 +401,6 @@ async def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command in ("weekly-harvest", "simulate-harvest"):
-        if on is not None and on.weekday() != 4:
-            print(f"warning: {args.on} is a {on.strftime('%A')}; a simulated Friday run is the norm", file=sys.stderr)
         return await _run(
             HARVEST_NODES,
             window=window,

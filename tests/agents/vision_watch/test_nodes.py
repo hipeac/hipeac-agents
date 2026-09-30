@@ -14,6 +14,7 @@ from hipeac_agents.agents.vision_watch.nodes import digest as digest_node_mod
 from hipeac_agents.agents.vision_watch.nodes import harvest as harvest_node_mod
 from hipeac_agents.agents.vision_watch.nodes.cluster import GroupingPlan
 from hipeac_agents.agents.vision_watch.nodes.digest import DigestItem, WeeklyDigest
+from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node_impl
 from hipeac_agents.agents.vision_watch.nodes.harvest.models import (
     CandidateList,
     GateVerdict,
@@ -88,7 +89,7 @@ class TestHarvestNode:
         )
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
 
@@ -132,7 +133,7 @@ class TestHarvestNode:
             )
         )
         crawl = FakeCrawl()
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
 
@@ -171,7 +172,7 @@ class TestHarvestNode:
             created=date(2026, 6, 12),
         )
         crawl = FakeCrawl()
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         with pytest.raises(workspace.WorkspaceError, match="--redo"):
             await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
@@ -194,7 +195,7 @@ class TestHarvestNode:
         crawl = FakeCrawl(pages={"https://example.com/feed": ("Feed", "link https://example.com/404")})
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
 
@@ -221,7 +222,7 @@ class TestHarvestNode:
         )
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
 
@@ -247,7 +248,7 @@ class TestHarvestNode:
         )
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
 
@@ -294,7 +295,7 @@ class TestHarvestNode:
         mail = FakeMail(messages=[message], bodies={"m1": body})
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl, mail), llm=llm)
 
@@ -305,7 +306,7 @@ class TestHarvestNode:
     async def test_crawl_missing_fails_all_due_sources(self, data_dir, llm, weekly_catalog):
         from hipeac_agents.agents.vision_watch.state import VisionWatchState
 
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(None), llm=llm)
 
@@ -330,7 +331,7 @@ class TestHarvestNode:
             ],
         )
 
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
 
@@ -340,7 +341,7 @@ class TestHarvestNode:
         assert any("physical-ai" in f.theme_ids for f in updates["findings"])
         # Regression (baseline B13): the search is bounded to the harvested
         # window, not to a literal "past week" that breaks backfills.
-        assert crawl.search_ranges and set(crawl.search_ranges) == {(date(2026, 6, 6), date(2026, 6, 12))}
+        assert crawl.search_ranges and set(crawl.search_ranges) == {(date(2026, 6, 8), date(2026, 6, 14))}
         assert not any("past week" in q for q in crawl.search_calls)
 
     async def test_channel_error_is_reported_under_its_source(self, data_dir, llm, weekly_catalog):
@@ -354,7 +355,7 @@ class TestHarvestNode:
                 return await super().scrape(url, fresh)
 
         state = VisionWatchState.model_construct(
-            week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12), skip_sweep=True
+            week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14), skip_sweep=True
         )
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(RaisingCrawl()), llm=llm)
@@ -374,7 +375,7 @@ class TestHarvestNode:
         )
         crawl = FakeCrawl(pages={"https://example.com/feed": ("Feed", "Old news — https://example.com/old")})
         state = VisionWatchState.model_construct(
-            week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12), skip_sweep=True
+            week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14), skip_sweep=True
         )
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
@@ -1420,6 +1421,79 @@ class TestUrlDedupe:
         assert "aggregator version" in merged[0].corroboration
 
 
+class TestFoldIntoPreviousWeek:
+    """A late newsletter item already reported last week under another URL must not reach this week's digest."""
+
+    MONDAY = date(2026, 9, 21)
+
+    @staticmethod
+    def _finding(fid: str, title: str, day: date, access: str = "newsletter") -> object:
+        from hipeac_agents.agents.vision_watch.schemas import Finding
+
+        return Finding(
+            id=fid,
+            date=day,
+            title=title,
+            url=f"https://example.com/{fid}",
+            source_id="sifted",
+            region="eu",
+            theme_ids=["physical-ai"],
+            summary="s",
+            access_method=access,
+        )
+
+    def _previous(self):
+        from hipeac_agents.agents.vision_watch.schemas import FindingsFile
+
+        return FindingsFile(
+            week="2026-W38",
+            created=date(2026, 9, 21),
+            findings=[self._finding("f-2026-W38-04", "Pasqal lists on Nasdaq", date(2026, 9, 18), "direct")],
+        )
+
+    async def test_late_item_already_in_last_weeks_digest(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import NearMatchGroups
+
+        late = self._finding("f-2026-W39-01", "Pasqal starts trading", date(2026, 9, 18))
+        fresh = self._finding("f-2026-W39-02", "Robots sold", date(2026, 9, 22))
+        llm = FakeLLM({NearMatchGroups: NearMatchGroups(groups=[["f-2026-W39-01", "f-2026-W38-04"]])})
+
+        kept, rejects = await harvest_node_impl._fold_into_previous_week(
+            HarvestContext(llm), [late, fresh], self._previous(), self.MONDAY
+        )
+
+        assert [f.id for f in kept] == ["f-2026-W39-02"]
+        assert (rejects[0].reason, rejects[0].detail) == (
+            "duplicate",
+            "already in 2026-W38 as f-2026-W38-04 (near-match rule)",
+        )
+        prompt = llm.calls[0][1]
+        assert "f-2026-W39-01" in prompt and "f-2026-W38-04" in prompt and "f-2026-W39-02" not in prompt
+
+    async def test_in_week_follow_up_is_not_folded(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
+
+        follow_up = self._finding("f-2026-W39-01", "Pasqal shares rise", date(2026, 9, 22))
+        llm = FakeLLM({})
+
+        kept, rejects = await harvest_node_impl._fold_into_previous_week(
+            HarvestContext(llm), [follow_up], self._previous(), self.MONDAY
+        )
+
+        assert (kept, rejects, llm.calls) == ([follow_up], [], [])
+
+    async def test_first_week_has_nothing_to_check(self):
+        from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
+
+        late = self._finding("f-2026-W39-01", "Pasqal starts trading", date(2026, 9, 18))
+        llm = FakeLLM({})
+
+        kept, rejects = await harvest_node_impl._fold_into_previous_week(HarvestContext(llm), [late], None, self.MONDAY)
+
+        assert (kept, rejects, llm.calls) == ([late], [], [])
+
+
 class TestCapVolume:
     """No source is capped on its own; a class with a weekly cap keeps its strongest findings."""
 
@@ -1631,8 +1705,8 @@ class TestFeedChannel:
         # sweep skipped: this test isolates the feed channel
         state = VisionWatchState.model_construct(
             week="2026-W24",
-            window_start=date(2026, 6, 6),
-            window_end=date(2026, 6, 12),
+            window_start=date(2026, 6, 8),
+            window_end=date(2026, 6, 14),
             skip_sweep=True,
         )
 
@@ -1662,7 +1736,7 @@ class TestFeedChannel:
                 "https://example.com/item": ("Humanoid deployed", "Full item text."),
             }
         )
-        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12))
+        state = VisionWatchState(week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14))
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(crawl), llm=llm)
 
@@ -1685,7 +1759,7 @@ class TestOnlyFilter:
         mail = FakeMail(messages=[message], bodies={"m1": "Humanoid deployed https://example.com/x"})
         llm = FakeLLM()
         state = VisionWatchState(
-            week="2026-W24", window_start=date(2026, 6, 6), window_end=date(2026, 6, 12), source_only=["darpa-news"]
+            week="2026-W24", window_start=date(2026, 6, 8), window_end=date(2026, 6, 14), source_only=["darpa-news"]
         )
 
         updates = await harvest_node_mod.harvest_node(state, services=_services(FakeCrawl(), mail), llm=llm)

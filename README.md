@@ -20,7 +20,7 @@ The pipeline is `harvest -> health` and `cluster -> digest`, with a separate `mo
 | `digest`  | Writes the week by theme, each story tagged with the open question it moves, and mails it                                     |
 | `monthly` | Says where each open question stands after a calendar month of weekly signals                                                  |
 
-The editorial week runs **Saturday through Friday**; a digest is labelled by the ISO week of its closing Friday, e.g. `2026-W37`. Without `--on`, a run targets the most recently closed week: on a Saturday, the week that ended the day before.
+The editorial week runs **Monday through Sunday**, so a week is exactly an ISO week and carries its label, e.g. `2026-W37`. Without `--on`, a run targets the most recently closed week: on a Monday, the week that ended the day before. A newsletter item counts in the week its newsletter arrived, even when it was published up to 7 days earlier, unless an earlier week already reported it. A month covers the weeks with most of their days in it (the week's Thursday decides), so no week is split between two monthly digests.
 
 Judgement-free logic — gates, tallies, thresholds, ranking — is plain deterministic Python, callable without an LLM. Prompts are reserved for genuine judgement: relevance, significance, grouping, prose.
 
@@ -35,10 +35,17 @@ cp .env.example .env    # then fill in the keys you need
 Every command goes through the `./run` wrapper, which loads `.env` and invokes `uv run`, resolving dependencies on first use.
 
 ```sh
-./run python -m hipeac_agents weekly-harvest            # Friday evening or later
-./run python -m hipeac_agents weekly-digest
-./run python -m hipeac_agents monthly-digest --month 2026-08
+./run python -m hipeac_agents weekly-harvest            # Monday early morning, for the week to Sunday
+./run python -m hipeac_agents weekly-digest             # right after the harvest
+./run python -m hipeac_agents monthly-digest --month 2026-08   # once the month's last week has closed
 ./run python -m hipeac_agents snapshot-feeds            # daily, so busy feeds keep their whole week
+```
+
+A crontab for the weekly job, Monday at 05:00, and the daily snapshots:
+
+```
+0 5 * * 1   cd /path/to/hipeac-agents && ./run python -m hipeac_agents weekly-harvest && ./run python -m hipeac_agents weekly-digest
+30 22 * * * cd /path/to/hipeac-agents && ./run python -m hipeac_agents snapshot-feeds
 ```
 
 Useful flags:
