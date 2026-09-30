@@ -500,6 +500,8 @@ async def harvest_feed_source(
 
 
 ARXIV_LISTING = "https://arxiv.org/list/{category}/pastweek?show=2000"
+# arXiv asks for no more than one request every 3 seconds.
+ARXIV_PAUSE_SECONDS = 3.0
 # Papers per category that reach the full verdict each week: busy categories
 # announce hundreds, nearly all incremental; the source cap keeps 4 of these.
 ARXIV_WEEKLY_PICK = 8
@@ -555,6 +557,20 @@ def parse_arxiv_abstract(html: str) -> str:
     return _ABSTRACT_LEAD.sub("", text)[:500]
 
 
+async def _fetch_arxiv(ctx: HarvestContext, services: Services, url: str) -> str | None:
+    """Fetch one arXiv page, one request at a time across the run and ``ARXIV_PAUSE_SECONDS`` apart.
+
+    :param ctx: The harvest context, holding the run's arXiv slot.
+    :param services: The wired service clients.
+    :param url: The listing or abstract URL.
+    :returns: The page, or ``None`` when the fetch fails.
+    """
+    async with ctx.arxiv_slot:
+        page = await services.crawl.fetch_feed(url)
+        await asyncio.sleep(ARXIV_PAUSE_SECONDS)
+    return page
+
+
 async def harvest_arxiv_source(
     ctx: HarvestContext,
     services: Services,
@@ -584,9 +600,7 @@ async def harvest_arxiv_source(
     :param themes: The themes.
     :returns: ``(findings, rejected, outcome)`` for the source.
     """
-    import asyncio
-
-    html = await services.crawl.fetch_feed(ARXIV_LISTING.format(category=source.arxiv))
+    html = await _fetch_arxiv(ctx, services, ARXIV_LISTING.format(category=source.arxiv))
     if html is None:
         return (
             [],
@@ -615,12 +629,11 @@ async def harvest_arxiv_source(
     known: dict[str, ScrapeResult] = {}
     for i in picked:
         candidate = candidates[i]
-        page = await services.crawl.fetch_feed(candidate.url)
+        page = await _fetch_arxiv(ctx, services, candidate.url)
         abstract = parse_arxiv_abstract(page or "")
         candidate = candidate.model_copy(update={"summary": abstract})
         survivors.append(candidate)
         known[candidate.url] = ScrapeResult(url=candidate.url, title=candidate.title, markdown=abstract)
-        await asyncio.sleep(1)  # arXiv etiquette: be gentle with arxiv.org
 
     verified, gated_rejects = await gate_candidates(
         ctx,

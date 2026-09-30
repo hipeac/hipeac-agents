@@ -125,7 +125,8 @@ class TestArxiv:
         assert "open chiplet interconnect" in gate_prompt, "the verdict sees the abstract"
         assert outcome.status == "collected"
 
-    async def test_unreachable_listing_is_flagged(self, themes):
+    async def test_unreachable_listing_is_flagged(self, themes, monkeypatch):
+        monkeypatch.setattr(channels, "ARXIV_PAUSE_SECONDS", 0)
         source = _source(id="arxiv-cs-ar", arxiv="cs.AR")
 
         _, _, outcome = await channels.harvest_arxiv_source(
@@ -134,6 +135,32 @@ class TestArxiv:
 
         assert outcome.status == "failed"
         assert outcome.flags == ["feed_fetch_failed"]
+
+    async def test_categories_never_hit_arxiv_at_once(self, themes, monkeypatch):
+        """Regression: the categories' listings went out together and arXiv refused 7 of 8 (W39 harvest)."""
+        import asyncio
+
+        monkeypatch.setattr(channels, "ARXIV_PAUSE_SECONDS", 0)
+        in_flight, peak = 0, 0
+
+        class CountingCrawl(FakeCrawl):
+            async def fetch_feed(self, url):
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0.01)
+                in_flight -= 1
+
+        ctx = HarvestContext(FakeLLM())
+        services = Services(crawl=CountingCrawl(), mail=None, vision=None)
+        await asyncio.gather(
+            *(
+                channels.harvest_arxiv_source(ctx, services, _source(id=f"arxiv-{c}", arxiv=c), *WINDOW, [], themes)
+                for c in ("cs.AR", "cs.DC", "cs.RO")
+            )
+        )
+
+        assert peak == 1
 
 
 async def _no_sleep(_seconds):
