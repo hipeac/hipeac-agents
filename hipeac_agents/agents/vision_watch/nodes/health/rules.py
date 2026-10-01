@@ -22,7 +22,7 @@ LABEL_ORDER: tuple[HealthLabel, ...] = (
 LABEL_HINTS: dict[HealthLabel, str] = {
     "fetch_failed": "the feed or page could not be fetched — check the URL",
     "empty_feed": "the feed returned no entries — the feed URL is probably dead or moved",
-    "truncated_feed": "the feed no longer reaches back to Saturday — run `snapshot-feeds` daily",
+    "truncated_feed": "the feed no longer reaches back to Monday — run `snapshot-feeds` daily",
     "stale_listing": f"only out-of-window items for {STREAK_WEEKS} weeks — the listing page is stale or misread",
     "silent": f"no candidates at all for {STREAK_WEEKS} weeks",
     "skipped": "marked bot-protected, never checked — find a feed or drop it",

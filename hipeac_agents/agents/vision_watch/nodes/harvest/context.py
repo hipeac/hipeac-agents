@@ -42,6 +42,9 @@ class HarvestContext:
         """
         self._llm = llm
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        # arXiv answers a burst from one client with errors: its categories are
+        # harvested concurrently, so their requests queue here, one at a time.
+        self.arxiv_slot = asyncio.Lock()
 
     async def _invoke(self, schema: type, prompt: str) -> Any:
         """Run one structured-output call, throttled, with backoff on rate limits.

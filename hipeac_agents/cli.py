@@ -2,10 +2,11 @@
 
 Usage::
 
-    ./run python -m hipeac_agents weekly-harvest [--redo]
-    ./run python -m hipeac_agents weekly-digest [--send] [--redo]
-    ./run python -m hipeac_agents monthly-digest --month 2026-07 [--send]
-    ./run python -m hipeac_agents simulate-harvest --on 2026-06-26 [--limit 4] [--skip-sweep]
+    ./run python -m hipeac_agents weekly-harvest [--redo]     # Monday early morning, for the week to Sunday
+    ./run python -m hipeac_agents weekly-digest [--send] [--redo]  # right after the harvest
+    ./run python -m hipeac_agents weekly-digest --on 2026-09-25 --intro-only  # rewrite a recorded bottom line
+    ./run python -m hipeac_agents monthly-digest [--month 2026-07] [--send]  # default: the latest complete month
+    ./run python -m hipeac_agents simulate-harvest --on 2026-06-24 [--limit 4] [--skip-sweep]
     ./run python -m hipeac_agents snapshot-feeds        # daily: keep busy feeds' whole week
     ./run python -m hipeac_agents replay-gate --from 2026-W26 --to 2026-W39 [--dry-run]
     ./run python -m hipeac_agents replay-gate --apply <replay folder>
@@ -53,8 +54,8 @@ def _initial_state(
 ) -> VisionWatchState:
     """Build the initial graph state for a run.
 
-    :param week: The week label (the ISO week of the closing Friday).
-    :param window: The ``(saturday, friday)`` window the run targets.
+    :param week: The week label (its ISO week).
+    :param window: The ``(monday, sunday)`` window the run targets.
     :param source_limit: Cap on the number of due sources checked.
     :param source_only: Only check these source ids.
     :param skip_sweep: Drop the general sweep (cheap partial runs).
@@ -77,20 +78,21 @@ def _initial_state(
 def _target_window(on: date | None = None) -> tuple[date, date]:
     """Pick the weekly window a run targets.
 
-    Without a date, the most recently closed Saturday–Friday window: a run on
-    a Saturday targets the week that closed the day before, never the week
-    that has just opened (harvesting an open week writes partial, write-once
-    evidence). With a date, the window containing it.
+    Without a date, the most recently closed Monday–Sunday window: a run on
+    a Monday targets the week that closed the day before, never the week that
+    has just opened (harvesting an open week writes partial, write-once
+    evidence). With a date, the window containing it; a week closes at the
+    end of its Sunday.
 
     :param on: The ``--on`` date, if given.
-    :returns: The ``(saturday, friday)`` window.
+    :returns: The ``(monday, sunday)`` window.
     :raises ValueError: If the window has not closed yet.
     """
     if on is None:
         return cadence.last_closed_window(date.today())
 
     window = cadence.current_window(on)
-    if window[1] > date.today():
+    if window[1] >= date.today():
         raise ValueError(f"the week containing {on.isoformat()} closes on {window[1].isoformat()}, not yet")
     return window
 
@@ -231,7 +233,7 @@ async def _run(
     keeps every Firecrawl markdown).
 
     :param nodes: The nodes to run, in order.
-    :param window: The targeted ``(saturday, friday)`` window; monthly runs have none.
+    :param window: The targeted ``(monday, sunday)`` window; monthly runs have none.
     :param data_dir: Optional workspace-root override (``--data-dir``).
     :param source_limit: Cap on the number of due sources checked.
     :param source_only: Only check these source ids.
@@ -357,7 +359,9 @@ async def main(argv: list[str] | None = None) -> int:
         ],
     )
     parser.add_argument("--on", help="harvest / weekly-digest: run for the week containing this ISO date")
-    parser.add_argument("--month", help="monthly-digest: calendar month to synthesise, e.g. 2026-07")
+    parser.add_argument(
+        "--month", help="monthly-digest: calendar month to synthesise, e.g. 2026-07 (default: the latest complete one)"
+    )
     parser.add_argument("--from", dest="first", help="replay-gate: first week label, e.g. 2026-W26")
     parser.add_argument("--to", dest="last", help="replay-gate: last week label, e.g. 2026-W39")
     parser.add_argument("--dry-run", action="store_true", help="replay-gate: only print the planned judgement calls")
@@ -374,11 +378,20 @@ async def main(argv: list[str] | None = None) -> int:
         help="harvest / weekly-digest: back the week up and redo it (clears its cluster entries)",
     )
     parser.add_argument(
+        "--intro-only",
+        action="store_true",
+        help="weekly-digest: rewrite only a recorded digest's bottom line (backed up, never sent)",
+    )
+    parser.add_argument(
         "--send",
         action="store_true",
         help="digest: email the digest to the board; harvest: email source-health changes to the dev list",
     )
     args = parser.parse_args(argv)
+    if args.intro_only and args.command != "weekly-digest":
+        parser.error("--intro-only applies to weekly-digest only")
+    if args.intro_only and (args.send or args.redo):
+        parser.error("--intro-only rewrites a recorded digest; it cannot be combined with --send or --redo")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -389,7 +402,7 @@ async def main(argv: list[str] | None = None) -> int:
         return await _replay_gate(args.first, args.last, args.dry_run, args.apply, args.data_dir)
 
     if args.command == "simulate-harvest" and not args.on:
-        parser.error("simulate-harvest requires --on YYYY-MM-DD (e.g. --on 2026-06-26 for a Friday-evening run)")
+        parser.error("simulate-harvest requires --on YYYY-MM-DD, any day of the week (e.g. --on 2026-06-24)")
         return 2
 
     on = date.fromisoformat(args.on) if args.on else None
@@ -400,8 +413,6 @@ async def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command in ("weekly-harvest", "simulate-harvest"):
-        if on is not None and on.weekday() != 4:
-            print(f"warning: {args.on} is a {on.strftime('%A')}; a simulated Friday run is the norm", file=sys.stderr)
         return await _run(
             HARVEST_NODES,
             window=window,
@@ -413,6 +424,14 @@ async def main(argv: list[str] | None = None) -> int:
             redo=args.redo,
         )
 
+    if args.command == "weekly-digest" and args.intro_only:
+        _use_data_dir(args.data_dir)
+        week = cadence.weekly_label(window[1])
+        if workspace.read_weekly_digest(week) is None:
+            print(f"no digest for {week}; run weekly-digest first", file=sys.stderr)
+            return 2
+        return await _run(["intro"], window=window, data_dir=args.data_dir)
+
     if args.command == "weekly-digest":
         return await _run(
             DIGEST_NODES,
@@ -423,14 +442,17 @@ async def main(argv: list[str] | None = None) -> int:
         )
 
     if args.command == "monthly-digest":
-        if not args.month:
-            parser.error("monthly-digest requires --month YYYY-MM (e.g. --month 2026-07)")
+        from hipeac_agents.agents.vision_watch.nodes.monthly.node import last_complete_month, month_is_complete
+
+        month = args.month or last_complete_month(date.today())
+        if not month_is_complete(month, date.today()):
+            print(f"refusing to run: {month} still has a week open", file=sys.stderr)
             return 2
         return await _run(
             ["monthly"],
             data_dir=args.data_dir,
             send=args.send,
-            month=args.month,
+            month=month,
         )
 
     return 2

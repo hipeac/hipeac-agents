@@ -76,12 +76,12 @@ class TestWindowGate:
         [
             (date(2026, 6, 8), True),
             (date(2026, 5, 8), False),
-            (date(2026, 6, 13), False),
+            (date(2026, 6, 15), False),
             (None, True),
         ],
     )
     def test_gate(self, item_date, expected):
-        assert harvest.window_gate(item_date, date(2026, 6, 6), date(2026, 6, 12)) is expected
+        assert harvest.window_gate(item_date, date(2026, 6, 8), date(2026, 6, 14)) is expected
 
 
 class TestDuplicateGate:
@@ -190,15 +190,15 @@ class TestHeadlineInBodyNormalisation:
 class TestParseFeedEntries:
     """Feed parsing: in-window selection plus plain-text summary cleaning."""
 
-    WINDOW_START = date(2026, 6, 6)
-    WINDOW_END = date(2026, 6, 12)
+    WINDOW_START = date(2026, 6, 8)
+    WINDOW_END = date(2026, 6, 14)
 
     def _feed(self, *entries: str) -> str:
         return (
             "<?xml version='1.0'?><rss version='2.0'><channel>"
             + "".join(
                 f"<item><title>{title}</title><link>{link}</link>"
-                f"<pubDate>Sat, 06 Jun 2026 12:00:00 +0000</pubDate>"
+                f"<pubDate>Mon, 08 Jun 2026 12:00:00 +0000</pubDate>"
                 f"<description>{summary}</description></item>"
                 for title, link, summary in entries
             )
@@ -285,8 +285,8 @@ class TestGateCandidateSummary:
             Services(crawl=crawl, mail=None, vision=None),
             [self._candidate(raw)],
             None,
-            date(2026, 6, 6),
-            date(2026, 6, 12),
+            date(2026, 6, 8),
+            date(2026, 6, 14),
             [],
             [self._theme()],
             "sweep",
@@ -313,8 +313,8 @@ class TestGateCandidateSummary:
             Services(crawl=crawl, mail=None, vision=None),
             [self._candidate(raw)],
             None,
-            date(2026, 6, 6),
-            date(2026, 6, 12),
+            date(2026, 6, 8),
+            date(2026, 6, 14),
             [],
             [self._theme()],
             "sweep",

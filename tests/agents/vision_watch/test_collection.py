@@ -19,7 +19,7 @@ from hipeac_agents.services.factory import Services
 from tests.agents.vision_watch._fakes import FakeCrawl, FakeLLM, make_candidate_handler, make_gate_handler
 
 
-WINDOW = (date(2026, 9, 19), date(2026, 9, 25))
+WINDOW = (date(2026, 9, 21), date(2026, 9, 27))  # 2026-W39, Monday–Sunday
 
 
 def _listing_entry(n: int, paper_id: str, title: str) -> str:
@@ -125,7 +125,9 @@ class TestArxiv:
         assert "open chiplet interconnect" in gate_prompt, "the verdict sees the abstract"
         assert outcome.status == "collected"
 
-    async def test_unreachable_listing_is_flagged(self, themes):
+    async def test_unreachable_listing_is_flagged(self, themes, monkeypatch):
+        monkeypatch.setattr(channels, "ARXIV_PAUSE_SECONDS", 0)
+        monkeypatch.setattr(channels, "ARXIV_RETRY_SECONDS", (0, 0))
         source = _source(id="arxiv-cs-ar", arxiv="cs.AR")
 
         _, _, outcome = await channels.harvest_arxiv_source(
@@ -134,6 +136,56 @@ class TestArxiv:
 
         assert outcome.status == "failed"
         assert outcome.flags == ["feed_fetch_failed"]
+
+    async def test_categories_never_hit_arxiv_at_once(self, themes, monkeypatch):
+        """Regression: the categories' listings went out together and arXiv refused 7 of 8 (W39 harvest)."""
+        import asyncio
+
+        monkeypatch.setattr(channels, "ARXIV_PAUSE_SECONDS", 0)
+        monkeypatch.setattr(channels, "ARXIV_RETRY_SECONDS", (0, 0))
+        in_flight, peak = 0, 0
+
+        class CountingCrawl(FakeCrawl):
+            async def fetch_feed(self, url):
+                nonlocal in_flight, peak
+                in_flight += 1
+                peak = max(peak, in_flight)
+                await asyncio.sleep(0.01)
+                in_flight -= 1
+
+        ctx = HarvestContext(FakeLLM())
+        services = Services(crawl=CountingCrawl(), mail=None, vision=None)
+        await asyncio.gather(
+            *(
+                channels.harvest_arxiv_source(ctx, services, _source(id=f"arxiv-{c}", arxiv=c), *WINDOW, [], themes)
+                for c in ("cs.AR", "cs.DC", "cs.RO")
+            )
+        )
+
+        assert peak == 1
+
+    async def test_refused_listing_is_retried(self, themes, monkeypatch):
+        """Regression: after two categories arXiv refused the rest for a while, and each failed at once (W39)."""
+        monkeypatch.setattr(channels, "ARXIV_PAUSE_SECONDS", 0)
+        monkeypatch.setattr(channels, "ARXIV_RETRY_SECONDS", (0, 0))
+        attempts = []
+
+        class RefusingOnceCrawl(FakeCrawl):
+            async def fetch_feed(self, url):
+                attempts.append(url)
+                return None if len(attempts) == 1 else "<html></html>"
+
+        _, _, outcome = await channels.harvest_arxiv_source(
+            HarvestContext(FakeLLM()),
+            Services(crawl=RefusingOnceCrawl(), mail=None, vision=None),
+            _source(id="arxiv-cs-ar", arxiv="cs.AR"),
+            *WINDOW,
+            [],
+            themes,
+        )
+
+        assert len(attempts) == 2
+        assert outcome.status != "failed"
 
 
 async def _no_sleep(_seconds):
@@ -195,7 +247,7 @@ class TestFeedFallbacks:
         """Regression (baseline B24): busy feeds lost the start of the week."""
         source = _source(feed_url="https://example.com/feed.xml")
         xml = _rss(("Humanoid deployed", "https://example.com/item", "Wed, 23 Sep 2026 10:00:00 GMT"))
-        earlier = CandidateItem(title="Robotics arm shipped", url="https://example.com/early", date="2026-09-19")
+        earlier = CandidateItem(title="Robotics arm shipped", url="https://example.com/early", date="2026-09-21")
         crawl = FakeCrawl(
             feeds={"https://example.com/feed.xml": xml},
             pages={"https://example.com/item": ("H", "t"), "https://example.com/early": ("Robotics arm shipped", "t")},
@@ -225,7 +277,7 @@ class TestSnapshotFeeds:
         monkeypatch.setattr("hipeac_agents.agents.vision_watch.settings.DATA_DIR", data_dir)
         feeds = {
             "https://example.com/robot-report/feed": _rss(
-                ("A", "https://example.com/a", "Sat, 19 Sep 2026 10:00:00 GMT")
+                ("A", "https://example.com/a", "Mon, 21 Sep 2026 10:00:00 GMT")
             )
         }
 

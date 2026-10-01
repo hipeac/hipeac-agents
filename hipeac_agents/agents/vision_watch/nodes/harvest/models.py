@@ -5,8 +5,9 @@ One model per judgement call, paired with the prompt of the same name in
 """
 
 from pydantic import BaseModel, Field
+from pydantic.json_schema import SkipJsonSchema
 
-from hipeac_agents.agents.vision_watch.schemas import Direction, Horizon
+from hipeac_agents.agents.vision_watch.schemas import Horizon
 
 
 class CandidateItem(BaseModel):
@@ -17,6 +18,9 @@ class CandidateItem(BaseModel):
     date: str = Field(default="", description="ISO date of the development, empty if unknown")
     summary: str = ""
     datapoint: str = Field(default="", description="Notable figure, e.g. '$900M', empty if none")
+    # Set by code on newsletter items, the day their email arrived; left out
+    # of the schema, so the extraction call never sees or fills it.
+    received: SkipJsonSchema[str] = ""
 
 
 class CandidateList(BaseModel):
@@ -47,10 +51,6 @@ class GateVerdict(BaseModel):
             "Forward importance for European computing, 1 (routine increment) "
             "to 5 (likely to reshape the field or Europe's position)"
         ),
-    )
-    direction: Direction | None = Field(
-        default=None,
-        description="Accelerates or slows the trend the Vision describes for the theme, or opens something new",
     )
     horizon: Horizon | None = Field(
         default=None, description="When its consequences land: now, within 1-2 years, or in 3-5 years"

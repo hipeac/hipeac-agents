@@ -18,7 +18,7 @@ from hipeac_agents.services.types import SearchHit
 from tests.agents.vision_watch._fakes import FakeCrawl, FakeLLM
 
 
-WINDOW = (date(2026, 9, 19), date(2026, 9, 25))
+WINDOW = (date(2026, 9, 21), date(2026, 9, 27))  # 2026-W39, Monday–Sunday
 
 
 @pytest.fixture(autouse=True)
@@ -110,22 +110,22 @@ class TestTriage:
 class TestVerdict:
     async def test_forward_fields_are_recorded(self, themes):
         crawl = FakeCrawl(pages={"https://example.com/0": ("Item 0", "t")})
-        llm = FakeLLM(
-            {
-                GateVerdict: _verdict(
-                    direction="new", horizon="3-5y", forward_note="Could reset EU fab plans.", significance=4
-                )
-            }
-        )
+        llm = FakeLLM({GateVerdict: _verdict(horizon="3-5y", forward_note="Could reset EU fab plans.", significance=4)})
 
         findings, _ = await _gate(llm, crawl, [_candidate(0)], themes)
 
-        assert (findings[0].direction, findings[0].horizon, findings[0].forward_note, findings[0].significance) == (
-            "new",
+        assert (findings[0].horizon, findings[0].forward_note, findings[0].significance) == (
             "3-5y",
             "Could reset EU fab plans.",
             4,
         )
+
+    def test_verdict_no_longer_asks_for_a_direction(self):
+        """Direction was never read after the verdict; it only cost output tokens."""
+        from hipeac_agents.agents.vision_watch.nodes.harvest.prompts import GATE
+
+        assert "direction" not in GATE.lower() and "strengthens" not in GATE
+        assert "direction" not in GateVerdict.model_fields
 
     async def test_undated_item_is_rejected(self, themes):
         """Regression (baseline B10): an item with no date anywhere was recorded
@@ -399,3 +399,58 @@ class TestResolveLink:
         self._serve(monkeypatch, {"https://substack.com/redirect/a": TimeoutError()})
 
         assert resolve_link("https://substack.com/redirect/a") == "https://substack.com/redirect/a"
+
+
+class TestNewsletterArrival:
+    """Regression: a newsletter reporting last Friday's news had its item rejected as out of the week, and
+    the week before never saw the email; 93 items over W26-W39 were recorded in no week."""
+
+    async def test_newsletter_reports_last_weeks_news(self, themes):
+        late = _candidate(0, date="2026-09-18", received="2026-09-22")
+        crawl = FakeCrawl(pages={"https://example.com/0": ("Item 0", "t")})
+
+        findings, rejected = await _gate(FakeLLM({GateVerdict: _verdict()}), crawl, [late], themes, triaged=True)
+
+        assert [(f.url, f.date) for f in findings] == [("https://example.com/0", date(2026, 9, 18))]
+        assert rejected == []
+
+    async def test_newsletter_item_older_than_a_week(self, themes):
+        old = _candidate(0, date="2026-09-14", received="2026-09-22")
+
+        findings, rejected = await _gate(FakeLLM({GateVerdict: _verdict()}), FakeCrawl(), [old], themes)
+
+        assert findings == []
+        assert (rejected[0].reason, rejected[0].detail) == (
+            "out_of_window",
+            "near_window (7d outside) published 2026-09-14",
+        )
+
+    async def test_feed_item_before_the_week_gets_no_grace(self, themes):
+        findings, rejected = await _gate(
+            FakeLLM({GateVerdict: _verdict()}), FakeCrawl(), [_candidate(0, date="2026-09-18")], themes
+        )
+
+        assert findings == []
+        assert rejected[0].reason == "out_of_window"
+
+    async def test_newsletter_that_arrived_outside_the_week_gets_no_grace(self, themes):
+        stale = _candidate(0, date="2026-09-18", received="2026-09-19")
+
+        _, rejected = await _gate(FakeLLM({GateVerdict: _verdict()}), FakeCrawl(), [stale], themes)
+
+        assert rejected[0].reason == "out_of_window"
+
+    def test_message_records_arrival_and_dates_undated_items(self):
+        from datetime import UTC, datetime
+        from types import SimpleNamespace
+
+        message = SimpleNamespace(timestamp=datetime(2026, 9, 22, 7, 30, tzinfo=UTC))
+
+        dated = channels._dated_by_message(_candidate(0, date="2026-09-18"), message)
+        undated = channels._dated_by_message(_candidate(1, date=""), message)
+
+        assert (dated.date, dated.received) == ("2026-09-18", "2026-09-22")
+        assert (undated.date, undated.received) == ("2026-09-22", "2026-09-22")
+
+    def test_extraction_schema_never_asks_for_the_arrival(self):
+        assert "received" not in str(CandidateList.model_json_schema())

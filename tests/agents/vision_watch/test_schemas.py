@@ -52,6 +52,23 @@ class TestFinding:
 
         assert not hasattr(finding, "tier")
 
+    def test_old_files_with_a_direction_still_read(self):
+        """Direction was dropped; evidence written before still parses."""
+        finding = Finding.model_validate(
+            {
+                "id": "f-2026-W24-01",
+                "date": "2026-06-09",
+                "title": "Some development",
+                "url": "https://example.com/a",
+                "source_id": "darpa-news",
+                "region": "global",
+                "direction": "strengthens",
+                "summary": "What happened.",
+            }
+        )
+
+        assert "direction" not in finding.model_dump()
+
     def test_rejects_unknown_region(self):
         with pytest.raises(ValidationError):
             Finding.model_validate(
@@ -111,6 +128,23 @@ class TestClusterEntry:
 
         assert entry.source_class == "press"
         assert entry.week == "2026-W01"
+
+    def test_old_logs_with_a_direction_still_read(self):
+        entry = ClusterEntry.model_validate(
+            {
+                "week": "2026-W01",
+                "finding_id": "f-2026-W01-03",
+                "source_id": "robot-report",
+                "source_class": "press",
+                "region": "global",
+                "date": "2026-01-13",
+                "note": "n",
+                "url": "https://example.com/a",
+                "direction": "weakens",
+            }
+        )
+
+        assert "direction" not in entry.model_dump()
 
 
 class TestSourceEntry:

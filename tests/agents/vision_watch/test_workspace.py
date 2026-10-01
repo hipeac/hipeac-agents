@@ -68,21 +68,21 @@ class TestWeeklyLabel:
     @pytest.mark.parametrize(
         ("day", "expected"),
         [
-            (date(2026, 6, 6), "2026-W23"),
-            (date(2026, 6, 12), "2026-W24"),
+            (date(2026, 6, 8), "2026-W24"),
+            (date(2026, 6, 14), "2026-W24"),
             (date(2026, 6, 10), "2026-W24"),
             (date(2026, 1, 1), "2026-W01"),
             (date(2025, 12, 28), "2025-W52"),
         ],
     )
-    def test_label_uses_closing_friday_iso_week(self, day, expected):
+    def test_label_is_the_iso_week(self, day, expected):
         assert workspace.weekly_label(day) == expected
 
-    def test_straddling_year_window_labels_by_closing_friday(self):
+    def test_straddling_year_window_is_the_iso_week(self):
         window_start, window_end = workspace.current_window(date(2026, 1, 1))
 
-        assert window_start == date(2025, 12, 27)
-        assert window_end == date(2026, 1, 2)
+        assert window_start == date(2025, 12, 29)
+        assert window_end == date(2026, 1, 4)
         assert workspace.weekly_label(window_end) == "2026-W01"
 
 
@@ -90,17 +90,17 @@ class TestCurrentWindow:
     @pytest.mark.parametrize(
         ("today", "expected_start"),
         [
-            (date(2026, 6, 6), date(2026, 6, 6)),
-            (date(2026, 6, 9), date(2026, 6, 6)),
-            (date(2026, 6, 12), date(2026, 6, 6)),
+            (date(2026, 6, 8), date(2026, 6, 8)),
+            (date(2026, 6, 11), date(2026, 6, 8)),
+            (date(2026, 6, 14), date(2026, 6, 8)),
         ],
     )
-    def test_window_starts_on_saturday(self, today, expected_start):
+    def test_window_starts_on_monday(self, today, expected_start):
         window_start, window_end = workspace.current_window(today)
 
         assert window_start == expected_start
-        assert window_start.weekday() == 5
-        assert window_end.weekday() == 4
+        assert window_start.weekday() == 0
+        assert window_end.weekday() == 6
         assert (window_end - window_start).days == 6
 
 
@@ -211,6 +211,29 @@ class TestWeeklyDigest:
         assert path.name == f"digest-{week}.md"
         with pytest.raises(WorkspaceError):
             workspace.write_weekly_digest(week, "# Again", data_dir)
+
+
+class TestRewriteWeeklyDigest:
+    """``--intro-only``: the write-once rule's one exception, always backed up."""
+
+    def test_backs_up_then_replaces(self, data_dir, week):
+        workspace.write_weekly_digest(week, "# Old\n", data_dir)
+        workspace.mark_weekly_digest_sent(week, "m-1", data_dir)
+
+        backup = workspace.rewrite_weekly_digest(week, "# New\n", data_dir)
+
+        assert workspace.read_weekly_digest(week, data_dir) == "# New\n"
+        assert (backup / "digests" / "weekly" / f"digest-{week}.md").read_text(encoding="utf-8") == "# Old\n"
+        assert backup.parent.name == "_backup"
+        assert backup.name.startswith(f"{week}-")
+        assert workspace.weekly_digest_sent(week, data_dir)
+        assert not list(workspace.weekly_digest_dir(data_dir).glob(".*.tmp"))
+
+    def test_no_digest(self, data_dir, week):
+        with pytest.raises(WorkspaceError, match="no digest"):
+            workspace.rewrite_weekly_digest(week, "# New\n", data_dir)
+
+        assert not (workspace.workspace_root(data_dir) / "_backup").exists()
 
 
 class TestWeeklyLedger:

@@ -73,7 +73,7 @@ def data_dir(tmp_path: str) -> str:
 
 @pytest.fixture
 def window() -> tuple[Path, Path] | tuple:
-    """A fixed weekly window: Saturday 2026-06-06 through Friday 2026-06-12."""
+    """A fixed weekly window, 2026-W24: Monday 2026-06-08 through Sunday 2026-06-14."""
     from datetime import date
 
-    return date(2026, 6, 6), date(2026, 6, 12)
+    return date(2026, 6, 8), date(2026, 6, 14)

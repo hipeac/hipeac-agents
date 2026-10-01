@@ -513,7 +513,7 @@ def week_cluster_entry_count(week: str, data_dir: str | None = None) -> int:
 
 
 def purge_week(week: str, keep_evidence: bool, data_dir: str | None = None) -> Path:
-    """Set a week aside so it can be redone: the one sanctioned non-append edit.
+    """Set a week aside so it can be redone: a sanctioned non-append edit, always backed up.
 
     Moves the week's weekly digest and grouping plan (and, unless
     ``keep_evidence``, its whole evidence folder) into
@@ -574,6 +574,34 @@ def write_weekly_digest(week: str, markdown: str, data_dir: str | None = None) -
     :raises WorkspaceError: If the digest already exists.
     """
     return write_once(weekly_digest_dir(data_dir) / digest_filename(week), markdown)
+
+
+def rewrite_weekly_digest(week: str, markdown: str, data_dir: str | None = None) -> Path:
+    """Replace a recorded weekly digest: the write-once rule's one exception, for its bottom line.
+
+    The recorded file is first copied to ``_backup/<week>-<timestamp>/``;
+    the new content is written beside it and moved into place, so the file
+    is never seen half-written. The sent marker stays untouched.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param markdown: The new digest markdown.
+    :param data_dir: Optional workspace-root override.
+    :returns: The backup directory.
+    :raises WorkspaceError: If the week has no digest.
+    """
+    path = weekly_digest_dir(data_dir) / digest_filename(week)
+    if not path.exists():
+        raise WorkspaceError(f"no digest for {week}")
+
+    backup = workspace_root(data_dir) / "_backup" / f"{week}-{datetime.now(UTC):%Y%m%dT%H%M%S}"
+    target = backup / "digests" / "weekly" / path.name
+    target.parent.mkdir(parents=True)
+    shutil.copy2(path, target)
+
+    staged = path.with_name(f".{path.name}.tmp")
+    staged.write_text(markdown, encoding="utf-8")
+    staged.replace(path)
+    return backup
 
 
 def read_weekly_digest(week: str, data_dir: str | None = None) -> str | None:

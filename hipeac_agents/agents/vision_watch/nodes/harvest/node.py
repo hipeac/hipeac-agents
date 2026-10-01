@@ -12,6 +12,7 @@ from typing import Any
 
 from hipeac_agents.agents.vision_watch import settings as watch_settings
 from hipeac_agents.agents.vision_watch import workspace
+from hipeac_agents.agents.vision_watch.cadence import weeks_before
 from hipeac_agents.agents.vision_watch.schemas import (
     Finding,
     FindingsFile,
@@ -205,13 +206,16 @@ async def harvest_node(
     merged = _merge_url_duplicates(capped)
     numbered = _assign_ids(state.week, merged)
     numbered, folded_rejects = await _fold_near_matches(ctx, numbered)
+    numbered, late_rejects = await _fold_into_previous_week(
+        ctx, numbered, workspace.read_findings_file(weeks_before(state.week, 1)), window_start
+    )
     numbered = await _resample(services.crawl, numbered, rejected)
 
     findings_file = FindingsFile(week=state.week, created=date.today(), findings=numbered)
     rejected_file = RejectedFile(
         week=state.week,
         created=date.today(),
-        rejected=dedupe_rejects(rejected + capped_rejects + folded_rejects),
+        rejected=dedupe_rejects(rejected + capped_rejects + folded_rejects + late_rejects),
     )
     workspace.write_findings_file(findings_file)
     workspace.write_rejected_file(rejected_file)
@@ -412,6 +416,52 @@ async def _fold_near_matches(ctx: HarvestContext, findings: list[Finding]) -> tu
     ]
 
     return kept_findings(findings, drop), folded
+
+
+async def _fold_into_previous_week(
+    ctx: HarvestContext, findings: list[Finding], previous: FindingsFile | None, window_start: date
+) -> tuple[list[Finding], list[RejectedItem]]:
+    """Drop late newsletter findings that the previous week already reported.
+
+    A newsletter item published before the week counts by its arrival, so it
+    may be last week's news told again under another URL. Only those late
+    items are checked, against last week's findings as anchors that are never
+    changed; an item dated inside the week is new evidence even on the same
+    story. LLM judgement call (near-match rule) — see ``prompts.NEAR_MATCH``.
+
+    :param ctx: The harvest context holding the LLM runners.
+    :param findings: This week's findings after the in-week fold.
+    :param previous: The previous week's findings file, if it was harvested.
+    :param window_start: The week's Monday.
+    :returns: The surviving findings, plus one ``duplicate`` reject per late item dropped.
+    """
+    late = [f for f in findings if f.access_method == "newsletter" and f.date < window_start]
+    if not late or previous is None or not previous.findings:
+        return findings, []
+
+    late_ids = {f.id for f in late}
+    anchor_ids = {f.id for f in previous.findings}
+    room = max(50 - len(late), 10)
+    already: dict[str, str] = {}
+    for chunk in range(0, len(previous.findings), room):
+        batch = late + previous.findings[chunk : chunk + room]
+        for group in (await ctx.near_match_groups([(f.id, f.title) for f in batch])).groups:
+            anchor = next((fid for fid in group if fid in anchor_ids), None)
+            if anchor:
+                already.update({fid: anchor for fid in group if fid in late_ids and fid not in already})
+
+    rejects = [
+        RejectedItem(
+            url=f.url,
+            claimed_title=f.title,
+            source_id=f.source_id,
+            reason="duplicate",
+            detail=f"already in {previous.week} as {already[f.id]} (near-match rule)",
+        )
+        for f in late
+        if f.id in already
+    ]
+    return kept_findings(findings, set(already)), rejects
 
 
 async def _resample(crawl: Any, findings: list[Finding], rejected: list[RejectedItem]) -> list[Finding]:

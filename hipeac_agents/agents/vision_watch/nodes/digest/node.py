@@ -28,9 +28,10 @@ from hipeac_agents.agents.vision_watch.state import VisionWatchState
 from hipeac_agents.services.factory import Services
 from hipeac_agents.services.mail import markdown_to_html
 from hipeac_agents.services.urls import display_domain
+from hipeac_agents.storage import WorkspaceError
 
-from .models import DigestItem, WeeklyDigest
-from .prompts import DIGEST_STORIES
+from .models import DigestItem, WeeklyDigest, WeeklyIntro
+from .prompts import DIGEST_INTRO, DIGEST_STORIES
 
 
 logger = logging.getLogger(__name__)
@@ -235,6 +236,11 @@ def _plain(text: str) -> str:
     return text.strip().strip("*#_\"'").strip().rstrip(".")
 
 
+def _one_paragraph(text: str) -> str:
+    """Collapse the model's line breaks, so the bottom line stays one line of the digest."""
+    return " ".join(text.split())
+
+
 @dataclass
 class _Printed:
     item: DigestItem
@@ -341,7 +347,7 @@ def compose_digest_markdown(
     lines = [
         f"# HiPEAC Vision Watch — Week {week}: {_plain(digest.headline) or 'Quiet week'}",
         "",
-        resolve_citations(digest.this_week.strip(), material.refs),
+        resolve_citations(_one_paragraph(digest.this_week), material.refs),
         "",
     ]
 
@@ -472,15 +478,7 @@ async def digest_node(
         logger.info("week %s already has a digest; skipping composition", week)
         return {"digest_markdown": recorded, "digest_sent": await _send(services, state, week, recorded)}
 
-    themes = workspace.read_themes()
-    catalog = workspace.read_source_catalog()
-    cluster_data = _collect_clusters(week, [theme.theme for theme in themes], catalog)
-    findings_file = workspace.read_findings_file(week)
-    findings = findings_file.findings if findings_file else []
-
-    candidates = story_candidates(week, themes, cluster_data, catalog)
-    forward_notes = {finding.id: finding.forward_note for finding in findings if finding.forward_note}
-    material = story_material(themes, candidates, forward_notes, catalog)
+    themes, catalog, cluster_data, findings, material = _week_material(week)
 
     if material.refs:
         digest = await llm.with_structured_output(WeeklyDigest).ainvoke(DIGEST_STORIES + "\n\n" + material.text)
@@ -496,6 +494,93 @@ async def digest_node(
     workspace.write_weekly_digest(week, markdown)
 
     return {"digest_markdown": markdown, "digest_sent": await _send(services, state, week, markdown)}
+
+
+def _week_material(
+    week: str,
+) -> tuple[list[ThemeDef], SourceCatalog, dict[str, dict[str, Any]], list[Finding], Material]:
+    """Rebuild a week's prose-call material from the workspace.
+
+    Scoped through the week, so a later call gets the same story keys and
+    finding ids as the one that composed the digest.
+
+    :param week: The week label.
+    :returns: ``(themes, catalog, cluster data, findings, material)``.
+    """
+    themes = workspace.read_themes()
+    catalog = workspace.read_source_catalog()
+    cluster_data = _collect_clusters(week, [theme.theme for theme in themes], catalog)
+    findings_file = workspace.read_findings_file(week)
+    findings = findings_file.findings if findings_file else []
+
+    candidates = story_candidates(week, themes, cluster_data, catalog)
+    forward_notes = {finding.id: finding.forward_note for finding in findings if finding.forward_note}
+    return themes, catalog, cluster_data, findings, story_material(themes, candidates, forward_notes, catalog)
+
+
+def _digest_lines(markdown: str) -> list[str]:
+    """Split a digest into lines, checking its bottom line sits where it is replaced.
+
+    :raises ValueError: If the digest does not start with a title, a blank
+        line, the bottom line and a blank line.
+    """
+    lines = markdown.split("\n")
+    if len(lines) < 4 or not lines[0].startswith("# ") or lines[1] or not lines[2].strip() or lines[3]:
+        raise ValueError("digest does not start with a title, a blank line, the bottom line and a blank line")
+    return lines
+
+
+def replace_bottom_line(markdown: str, paragraph: str) -> str:
+    """Swap a digest's bottom line, leaving every other line as it was.
+
+    The bottom line is the one line between the title and the first section,
+    each side a blank line; a digest of any other shape is refused rather
+    than guessed at.
+
+    :param markdown: The recorded digest.
+    :param paragraph: The new bottom line, already resolved to links.
+    :returns: The digest with the new bottom line.
+    :raises ValueError: If the digest does not have the expected layout.
+    """
+    lines = _digest_lines(markdown)
+    lines[2] = _one_paragraph(paragraph)
+    return "\n".join(lines)
+
+
+async def intro_node(state: VisionWatchState, *, llm: Any) -> dict[str, Any]:
+    """Rewrite a recorded week's bottom line, and nothing else.
+
+    One prose call sees the week's rebuilt material and the digest as
+    printed, without its old bottom line, so it cites the same finding ids
+    and leads with the stories the board got. The previous digest is backed
+    up; the ledger, signals log and sent marker are left alone, and nothing
+    is sent. A week without candidate stories is left as it was.
+
+    :param state: The graph state; carries the week.
+    :param llm: The chat model used for the bottom line.
+    :returns: State updates: the digest markdown.
+    :raises WorkspaceError: If the week has no digest.
+    :raises ValueError: If the digest does not have the expected layout.
+    """
+    week = state.week
+    recorded = workspace.read_weekly_digest(week)
+    if recorded is None:
+        raise WorkspaceError(f"no digest for {week}; run weekly-digest first")
+
+    lines = _digest_lines(recorded)
+    *_, material = _week_material(week)
+    if not material.refs:
+        logger.info("week %s has no candidate stories; bottom line left as it was", week)
+        return {"digest_markdown": recorded}
+
+    printed = "\n".join([lines[0], *lines[3:]])
+    intro = await llm.with_structured_output(WeeklyIntro).ainvoke(
+        DIGEST_INTRO + "\n\n" + material.text + "\n\nTHE DIGEST AS PRINTED (without its bottom line):\n\n" + printed
+    )
+    markdown = replace_bottom_line(recorded, resolve_citations(_one_paragraph(intro.this_week), material.refs))
+    backup = workspace.rewrite_weekly_digest(week, markdown)
+    logger.info("week %s bottom line rewritten; previous digest in %s", week, backup)
+    return {"digest_markdown": markdown}
 
 
 def _subject(markdown: str) -> str:

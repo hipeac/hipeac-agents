@@ -22,7 +22,6 @@ RejectionReason = Literal[
     "undated",
     "roundup",
 ]
-Direction = Literal["strengthens", "weakens", "new"]
 Horizon = Literal["now", "1-2y", "3-5y"]
 
 AccessMethod = Literal["direct", "firecrawl", "newsletter", "board-tip", "sweep"]
@@ -44,7 +43,6 @@ class Finding(BaseModel):
     significance: int = 3
     access_method: AccessMethod | None = None
     corroboration: str | None = None
-    direction: Direction | None = None
     horizon: Horizon | None = None
     forward_note: str = ""
 
@@ -119,7 +117,6 @@ class ClusterEntry(BaseModel):
     note: str
     url: str
     significance: int | None = None
-    direction: Direction | None = None
     horizon: Horizon | None = None
 
 
