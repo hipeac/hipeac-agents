@@ -213,6 +213,29 @@ class TestWeeklyDigest:
             workspace.write_weekly_digest(week, "# Again", data_dir)
 
 
+class TestRewriteWeeklyDigest:
+    """``--intro-only``: the write-once rule's one exception, always backed up."""
+
+    def test_backs_up_then_replaces(self, data_dir, week):
+        workspace.write_weekly_digest(week, "# Old\n", data_dir)
+        workspace.mark_weekly_digest_sent(week, "m-1", data_dir)
+
+        backup = workspace.rewrite_weekly_digest(week, "# New\n", data_dir)
+
+        assert workspace.read_weekly_digest(week, data_dir) == "# New\n"
+        assert (backup / "digests" / "weekly" / f"digest-{week}.md").read_text(encoding="utf-8") == "# Old\n"
+        assert backup.parent.name == "_backup"
+        assert backup.name.startswith(f"{week}-")
+        assert workspace.weekly_digest_sent(week, data_dir)
+        assert not list(workspace.weekly_digest_dir(data_dir).glob(".*.tmp"))
+
+    def test_no_digest(self, data_dir, week):
+        with pytest.raises(WorkspaceError, match="no digest"):
+            workspace.rewrite_weekly_digest(week, "# New\n", data_dir)
+
+        assert not (workspace.workspace_root(data_dir) / "_backup").exists()
+
+
 class TestWeeklyLedger:
     def test_round_trip_and_write_once(self, data_dir, week):
         from hipeac_agents.agents.vision_watch.schemas import LedgerEntry, LedgerFile

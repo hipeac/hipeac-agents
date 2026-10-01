@@ -55,6 +55,7 @@ Useful flags:
 | `--on 2026-09-11` | Run for the week containing this date (backfilling)   |
 | `--send`          | Digest: email the board. Harvest: email source-health changes to the dev list (opt-in) |
 | `--redo`          | Back the week up and redo it (clears its cluster entries) |
+| `--intro-only`    | Weekly digest: rewrite only a recorded digest's bottom line (backed up first, never sent) |
 | `--limit N`       | Check at most N sources — cheap partial harvests      |
 | `--only id1,id2`  | Check only these source ids                           |
 | `--skip-sweep`    | Drop the general per-theme search sweep               |
@@ -64,7 +65,7 @@ Useful flags:
 
 A digest composed without `--send` can be reviewed and sent later with `--send`; it is never sent twice.
 
-The weekly digest is written for the editorial board: a short bottom line on the open question that moved most, then per theme at most two full stories and the rest as one-line items under "Also moving", the board tips, and any story that newly converged. Each item is tagged with the open question it moves and which way (`question → lean`), or `new topic`; full stories from an emerging cluster are marked "early signal", and an item that answers a different question in a second theme is marked "also in <theme>". Quiet themes are named in one line. Every finding of the week is kept in the signals log beside the digest, and every printed item in the week's ledger.
+The weekly digest is written for the editorial board: a 3-4 sentence bottom line on the 2-3 open questions that moved most, linking the findings it cites, then per theme at most two full stories and the rest as one-line items under "Also moving", the board tips, and any story that newly converged. Each item is tagged with the open question it moves and which way (`question → lean`), or `new topic`; full stories from an emerging cluster are marked "early signal", and an item that answers a different question in a second theme is marked "also in <theme>". Quiet themes are named in one line. Every finding of the week is kept in the signals log beside the digest, and every printed item in the week's ledger.
 
 The monthly digest cuts across themes, by question. Code reads the month's ledgers and applies the evidence gate: a question qualifies with three or more signals across two or more weeks; a new topic with three signals, or two once its story is a candidate trend. One prose call then writes, per qualifying question, most evidence first, its lean, the evidence across the weeks, a draft position for the 2027 Vision and what is still open, plus the new topics with a question the board could add, and a bottom line. The digest also lists the thin evidence (questions below the gate), the questions with no evidence this month, and signals on questions since reworded.
 
@@ -80,10 +81,10 @@ digests/weekly/         digest-YYYY-Www.md (write-once), its .sent.json marker, 
 digests/monthly/        digest-YYYY-MM.md (write-once) and its .sent.json marker
 cache/scrapes/          content-addressed crawl cache
 cache/feed-snapshots/   the open week's feed entries, captured daily
-_backup/                weeks set aside by --redo
+_backup/                weeks set aside by --redo, digests before an --intro-only rewrite
 ```
 
-The themes and the source catalog are **editorial input, owned by a human** — the agent never rewrites them. Evidence and digests are write-once: redo a week with `--redo`, which backs everything up first.
+The themes and the source catalog are **editorial input, owned by a human** — the agent never rewrites them. Evidence and digests are write-once: redo a week with `--redo`, which backs everything up first. The one in-place edit is `weekly-digest --intro-only`, which rewrites a recorded digest's bottom line after backing it up.
 
 `themes.yaml` lists the Vision's broad lines: each theme has an id, a plain-words `description`, the open `questions` the next Vision asks in it, what to `look_for` (real-world names: programmes, companies, laws — news never uses the Vision's vocabulary), optional `keywords` as hints, and a distinct `sweep_query`. An item is relevant when it is a signal inside a theme.
 

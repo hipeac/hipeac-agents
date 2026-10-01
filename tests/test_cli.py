@@ -60,6 +60,41 @@ class TestWeeklyDigest:
         assert fake_graph[0][0] == ["cluster", "digest"]
 
 
+class TestIntroOnly:
+    async def test_runs_only_the_intro_node(self, monkeypatch, fake_graph, data_dir):
+        _freeze_today(monkeypatch, date(2026, 6, 15))
+        workspace.write_weekly_digest("2026-W24", "# old\n\nline\n\n", data_dir)
+
+        exit_code = await cli.main(["weekly-digest", "--intro-only", "--data-dir", str(data_dir)])
+
+        assert exit_code == 0
+        assert fake_graph[0][0] == ["intro"]
+
+    @pytest.mark.parametrize("flag", ["--send", "--redo"])
+    async def test_combined_with_send_or_redo(self, fake_graph, data_dir, flag):
+        workspace.write_weekly_digest("2026-W24", "# old\n", data_dir)
+
+        with pytest.raises(SystemExit) as exc:
+            await cli.main(["weekly-digest", "--on", "2026-06-10", "--intro-only", flag, "--data-dir", str(data_dir)])
+
+        assert exc.value.code == 2
+        assert not fake_graph
+        assert workspace.read_weekly_digest("2026-W24", data_dir) == "# old\n"
+
+    async def test_only_for_the_weekly_digest(self, fake_graph):
+        with pytest.raises(SystemExit):
+            await cli.main(["monthly-digest", "--intro-only"])
+
+        assert not fake_graph
+
+    async def test_no_digest_yet(self, fake_graph, data_dir, capsys):
+        exit_code = await cli.main(["weekly-digest", "--on", "2026-06-10", "--intro-only", "--data-dir", str(data_dir)])
+
+        assert exit_code == 2
+        assert "no digest for 2026-W24; run weekly-digest first" in capsys.readouterr().err
+        assert not fake_graph
+
+
 class TestMonthlyDigest:
     async def test_monthly_without_a_month(self, monkeypatch, fake_graph):
         """Monday run without a month: 5 October 2026 targets September, whose last week closed on 27 September."""

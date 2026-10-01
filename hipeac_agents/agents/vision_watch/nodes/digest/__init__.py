@@ -2,8 +2,9 @@
 
 Layout:
 
-- ``prompts.py`` — the prompt for the one judgement call.
-- ``models.py`` — its structured-output model.
+- ``prompts.py`` — the prompts for the judgement calls: the digest, and a
+  recorded week's bottom line rewritten on its own (``--intro-only``).
+- ``models.py`` — their structured-output models.
 - ``node.py`` — orchestration: story selection, the prose call, citation
   resolution and the budget, markdown assembly, write, send.
 
@@ -14,8 +15,23 @@ model invents is ever published. The ledger (every printed item) and the
 signals log (every finding) are written beside it.
 """
 
-from .models import DigestItem, WeeklyDigest  # noqa: F401
-from .node import compose_digest_markdown, digest_node, resolve_citations  # noqa: F401
+from .models import DigestItem, WeeklyDigest, WeeklyIntro  # noqa: F401
+from .node import (  # noqa: F401
+    compose_digest_markdown,
+    digest_node,
+    intro_node,
+    replace_bottom_line,
+    resolve_citations,
+)
 
 
-__all__ = ["DigestItem", "WeeklyDigest", "compose_digest_markdown", "digest_node", "resolve_citations"]
+__all__ = [
+    "DigestItem",
+    "WeeklyDigest",
+    "WeeklyIntro",
+    "compose_digest_markdown",
+    "digest_node",
+    "intro_node",
+    "replace_bottom_line",
+    "resolve_citations",
+]
