@@ -433,6 +433,12 @@ async def main(argv: list[str] | None = None) -> int:
         return await _run(["intro"], window=window, data_dir=args.data_dir)
 
     if args.command == "weekly-digest":
+        _use_data_dir(args.data_dir)
+        week = cadence.weekly_label(window[1])
+        # A recorded digest was composed under this gate; only a redo recomposes it.
+        if not workspace.is_harvested(week) and (args.redo or workspace.read_weekly_digest(week) is None):
+            print(f"refusing to run: {week} has no harvest; run weekly-harvest first", file=sys.stderr)
+            return 2
         return await _run(
             DIGEST_NODES,
             window=window,

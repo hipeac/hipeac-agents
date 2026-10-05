@@ -65,6 +65,8 @@ Useful flags:
 
 A digest composed without `--send` can be reviewed and sent later with `--send`; it is never sent twice.
 
+The weekly digest refuses a week that was not harvested (no `health.json` in its evidence folder), so run `weekly-harvest` first; a week that already has a digest is exempt unless it is redone.
+
 The weekly digest is written for the editorial board: a 3-4 sentence bottom line on the 2-3 open questions that moved most, linking the findings it cites, then per theme at most two full stories and the rest as one-line items under "Also moving", the board tips, and any story that newly converged. Each item is tagged with the open question it moves and which way (`question → lean`), or `new topic`; full stories from an emerging cluster are marked "early signal", and an item that answers a different question in a second theme is marked "also in <theme>". Quiet themes are named in one line. Every finding of the week is kept in the signals log beside the digest, and every printed item in the week's ledger.
 
 The monthly digest cuts across themes, by question. Code reads the month's ledgers and applies the evidence gate: a question qualifies with three or more signals across two or more weeks; a new topic with three signals, or two once its story is a candidate trend. One prose call then writes, per qualifying question, most evidence first, its lean, the evidence across the weeks, a draft position for the 2027 Vision and what is still open, plus the new topics with a question the board could add, and a bottom line. The digest also lists the thin evidence (questions below the gate), the questions with no evidence this month, and signals on questions since reworded.

@@ -43,6 +43,17 @@ def fake_graph(monkeypatch):
     return builds
 
 
+@pytest.fixture
+def harvested(monkeypatch):
+    monkeypatch.setattr("hipeac_agents.cli.workspace.is_harvested", lambda week, data_dir=None: True)
+
+
+def _write_health(week, data_dir):
+    from hipeac_agents.agents.vision_watch.schemas import HealthFile
+
+    workspace.write_health(HealthFile(week=week, created=date(2026, 6, 15), labels={}), "# health\n", data_dir)
+
+
 class TestWeeklyHarvest:
     async def test_runs_harvest_then_source_health(self, fake_graph, capsys):
         exit_code = await cli.main(["weekly-harvest"])
@@ -53,11 +64,57 @@ class TestWeeklyHarvest:
 
 
 class TestWeeklyDigest:
-    async def test_runs_cluster_then_digest(self, fake_graph):
+    async def test_runs_cluster_then_digest(self, fake_graph, harvested):
         exit_code = await cli.main(["weekly-digest"])
 
         assert exit_code == 0
         assert fake_graph[0][0] == ["cluster", "digest"]
+
+
+class TestHarvestGate:
+    async def test_refused_without_a_harvest(self, monkeypatch, fake_graph, data_dir, capsys):
+        _freeze_today(monkeypatch, date(2026, 6, 15))
+
+        exit_code = await cli.main(["weekly-digest", "--send", "--data-dir", str(data_dir)])
+
+        assert exit_code == 2
+        assert fake_graph == []
+        assert "2026-W24 has no harvest; run weekly-harvest first" in capsys.readouterr().err
+        assert workspace.read_weekly_digest("2026-W24", data_dir) is None
+
+    async def test_allowed_after_a_harvest_without_findings(self, monkeypatch, fake_graph, data_dir):
+        _freeze_today(monkeypatch, date(2026, 6, 15))
+        _write_health("2026-W24", data_dir)
+
+        exit_code = await cli.main(["weekly-digest", "--data-dir", str(data_dir)])
+
+        assert exit_code == 0
+        assert fake_graph[0][0] == ["cluster", "digest"]
+
+    async def test_recorded_digest_is_still_sendable(self, monkeypatch, fake_graph, data_dir):
+        _freeze_today(monkeypatch, date(2026, 6, 15))
+        workspace.write_weekly_digest("2026-W24", "# old\n", data_dir)
+
+        exit_code = await cli.main(["weekly-digest", "--send", "--data-dir", str(data_dir)])
+
+        assert exit_code == 0
+
+    async def test_redo_refused_without_a_harvest_before_setting_the_week_aside(
+        self, monkeypatch, fake_graph, data_dir
+    ):
+        _freeze_today(monkeypatch, date(2026, 6, 15))
+        workspace.write_weekly_digest("2026-W24", "# old\n", data_dir)
+
+        exit_code = await cli.main(["weekly-digest", "--redo", "--data-dir", str(data_dir)])
+
+        assert exit_code == 2
+        assert workspace.read_weekly_digest("2026-W24", data_dir) == "# old\n"
+
+    async def test_intro_only_is_not_gated(self, monkeypatch, fake_graph, data_dir):
+        _freeze_today(monkeypatch, date(2026, 6, 15))
+        workspace.write_weekly_digest("2026-W24", "# old\n\nline\n\n", data_dir)
+
+        assert await cli.main(["weekly-digest", "--intro-only", "--data-dir", str(data_dir)]) == 0
 
 
 class TestIntroOnly:
@@ -213,7 +270,7 @@ class RecordingCrawl:
 class TestCrawlPreflight:
     """Regression (baseline B5): digest runs spent a crawl credit on a preflight."""
 
-    async def test_digest_run_skips_the_crawl_preflight(self, monkeypatch, fake_graph):
+    async def test_digest_run_skips_the_crawl_preflight(self, monkeypatch, fake_graph, harvested):
         from hipeac_agents.services.factory import Services
 
         crawl = RecordingCrawl()
@@ -267,6 +324,8 @@ class TestRunSummary:
             RejectedFile(week="2026-W24", created=date(2026, 6, 13), rejected=[reject, reject]), data_dir
         )
 
+        _write_health("2026-W24", data_dir)
+
         await cli.main(["weekly-digest", "--data-dir", str(data_dir)])
 
         assert "week 2026-W24: findings=1 rejected=2" in capsys.readouterr().out
@@ -276,6 +335,7 @@ class TestRedo:
     async def test_digest_redo_sets_the_week_aside_before_running(self, monkeypatch, fake_graph, data_dir, capsys):
         _freeze_today(monkeypatch, date(2026, 6, 15))
         workspace.write_weekly_digest("2026-W24", "# old\n", data_dir)
+        _write_health("2026-W24", data_dir)
 
         await cli.main(["weekly-digest", "--redo", "--data-dir", str(data_dir)])
 
@@ -284,7 +344,7 @@ class TestRedo:
 
 
 class TestModelTiers:
-    async def test_run_names_each_tier_and_reports_token_usage(self, fake_graph, monkeypatch, capsys):
+    async def test_run_names_each_tier_and_reports_token_usage(self, fake_graph, monkeypatch, harvested, capsys):
         from contextlib import contextmanager
         from types import SimpleNamespace
 

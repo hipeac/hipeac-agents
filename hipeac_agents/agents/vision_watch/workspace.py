@@ -181,6 +181,19 @@ def read_sources_file(week: str, data_dir: str | None = None) -> schemas.Sources
     return schemas.SourcesFile.model_validate_json(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
+def is_harvested(week: str, data_dir: str | None = None) -> bool:
+    """Tell whether a week's harvest completed.
+
+    The health report is the last thing a harvest writes, and it is written even
+    when the week yields no findings.
+
+    :param week: A week label such as ``"2026-W24"``.
+    :param data_dir: Optional workspace-root override.
+    :returns: ``True`` when the week has a health report.
+    """
+    return read_health_file(week, data_dir) is not None
+
+
 def write_health(file: schemas.HealthFile, markdown: str, data_dir: str | None = None) -> Path:
     """Write a week's source-health labels and their readable report (write-once).
 
@@ -804,6 +817,7 @@ __all__ = [
     "findings_dir",
     "findings_path",
     "grouping_path",
+    "is_harvested",
     "list_weeks",
     "mark_monthly_digest_sent",
     "mark_weekly_digest_sent",
