@@ -36,6 +36,8 @@ Write:
   a deployment figure or a rule moves an answer when it bears on a question.
   Skip a candidate only when it bears on no question and matters for nothing
   in the Vision; say nothing about it.
+  A finding whose source is a board tip was flagged by an editor: it is a
+  lead the board asked about, so cite it when it bears on the story it sits in.
 
 lean: the direction the evidence pushes the answer, 2-5 words ("gap closing",
 "towards on-device", "attackers gain", "not yet"); never a restatement of the

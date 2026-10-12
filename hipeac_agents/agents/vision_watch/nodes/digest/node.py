@@ -177,7 +177,8 @@ def story_material(
                 material.finding_ids[entry.url] = entry.finding_id
                 # No significance: the prose call weighs the evidence itself,
                 # unanchored by the small model's scores.
-                about = [f"source: {entry.source_id}"]
+                source = "board tip, flagged by an editor" if entry.source_id == "board-tip" else entry.source_id
+                about = [f"source: {source}"]
                 if entry.horizon:
                     about.append(f"horizon {entry.horizon}")
                 note = forward_notes.get(entry.finding_id)
@@ -383,13 +384,24 @@ def compose_digest_markdown(
             for printed in full + brief
         )
 
+    headings = {theme.theme: theme.heading for theme in themes}
+
     if tips:
+        # A tip a story cites points there, so it does not read as unprocessed.
+        cited_in: dict[str, list[str]] = {}
+        for entry in ledger.entries:
+            for finding_id in entry.finding_ids:
+                if headings[entry.theme] not in cited_in.setdefault(finding_id, []):
+                    cited_in[finding_id].append(headings[entry.theme])
         lines.extend(["## Board tips", ""])
-        lines.extend(f"- _{tip.summary}_ — [{display_domain(tip.url)}]({tip.url})" for tip in tips)
+        lines.extend(
+            f"- _{tip.summary}_ — [{display_domain(tip.url)}]({tip.url})"
+            + (f" · in {', '.join(cited_in[tip.id])}" if tip.id in cited_in else "")
+            for tip in tips
+        )
         lines.append("")
 
     if converged:
-        headings = {theme.theme: theme.heading for theme in themes}
         lines.extend(["## Newly converged", ""])
         lines.extend(
             f"- **{data['cluster'].name}** ({headings.get(data['theme'], data['theme'])}): "

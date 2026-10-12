@@ -1034,6 +1034,21 @@ class TestStorySelection:
         assert "Open question next-computing-paradigm.1: Are personal AI orchestrators emerging?" in material.text
         assert "(no stories this week)" in material.text.split('THEME "physical-ai"')[1].split("THEME")[0]
 
+    def test_material_marks_a_board_tip_as_flagged_by_an_editor(self, themes, data_dir):
+        from hipeac_agents.agents.vision_watch.nodes.digest.node import story_material
+
+        tip = _digest_entry("2026-W24", "tip", "https://x/tip").model_copy(update={"source_id": "board-tip"})
+        story = self._cluster_data("story", "agentic-ai", [tip, _digest_entry("2026-W24", "e1", "https://x/1")])
+
+        material = story_material(
+            themes, {"agentic-ai": [("story", story)]}, {}, workspace.read_source_catalog(data_dir)
+        )
+
+        lines = material.text.splitlines()
+        assert any("Note tip (source: board tip, flagged by an editor)" in line for line in lines)
+        assert any("Note e1 (source: robot-report)" in line for line in lines)
+        assert sum("flagged by an editor" in line for line in lines) == 1
+
 
 class TestComposeDigest:
     """Assembly rules, enforced in code whatever the prose call returns."""
@@ -1072,11 +1087,46 @@ class TestComposeDigest:
             story=story, question=question, lean="moving", title=title or f"Title {story}", text=text, brief=brief
         )
 
-    def _compose(self, themes, material, items):
+    def _compose(self, themes, material, items, tips=()):
         from hipeac_agents.agents.vision_watch.nodes.digest.node import compose_digest_markdown
 
         digest = WeeklyDigest(headline="H", this_week="Bottom line.", items=items)
-        return compose_digest_markdown(self.WEEK, themes, digest, material, [], [], 10)
+        return compose_digest_markdown(self.WEEK, themes, digest, material, list(tips), [], 10)
+
+    @staticmethod
+    def _tip(finding_id: str, url: str):
+        return _digest_finding(finding_id, url, source_id="board-tip", summary=f"Tip {finding_id}.")
+
+    def test_a_cited_tip_points_to_its_themes(self, themes):
+        material = self._material({"S1": ("new-hardware", "strengthening"), "S2": ("physical-ai", "strengthening")})
+
+        markdown, _ = self._compose(
+            themes,
+            material,
+            [
+                self._item("S1", "new-hardware.1", "Chips [ship](F1)."),
+                self._item("S2", "physical-ai.1", "Robots [use chips](F1) and [sell](F2)."),
+            ],
+            tips=[self._tip("f-1", "https://x/1")],
+        )
+
+        tips = markdown.split("## Board tips")[1]
+        assert "- _Tip f-1._ — [x](https://x/1) · in New hardware, Physical AI\n" in tips
+
+    def test_a_tip_no_printed_item_cites_has_no_pointer(self, themes):
+        material = self._material({"S1": ("physical-ai", "strengthening"), "S2": ("physical-ai", "strengthening")})
+
+        markdown, _ = self._compose(
+            themes,
+            material,
+            [self._item("S1", "physical-ai.1", "Robots [sell](F1).")],
+            tips=[self._tip("f-2", "https://x/2"), self._tip("f-unclustered", "https://y/tip")],
+        )
+
+        tips = markdown.split("## Board tips")[1]
+        assert "- _Tip f-2._ — [x](https://x/2)\n" in tips
+        assert "- _Tip f-unclustered._ — [y](https://y/tip)\n" in tips
+        assert " · in " not in tips
 
     def test_question_text_instead_of_id(self, themes, caplog):
         material = self._material({"S1": ("physical-ai", "strengthening")})
@@ -1364,6 +1414,16 @@ class TestCheckEditedDigest:
         with pytest.raises(ValueError, match="tag may not change"):
             self._check(self.DIGEST, edited)
 
+    def test_tip_pointer_is_frozen(self):
+        original = self.DIGEST.replace(
+            "[example.com](https://example.com/tip)\n", "[example.com](https://example.com/tip) · in Physical AI\n"
+        )
+        reworded = original.replace("its model handles the picking", "its model does the picking")
+
+        assert self._check(original, reworded) == reworded
+        with pytest.raises(ValueError, match="only the prose"):
+            self._check(original, original.replace("· in Physical AI", "· in New hardware"))
+
     def test_changed_bottom_line_is_refused(self):
         edited = self.DIGEST.replace("Bottom line citing", "Bottom line that cites")
 
@@ -1567,6 +1627,13 @@ class TestDigestPrompt:
         assert "by what they change for the answers" in text
         assert "not by the size of the company or the money involved" in text
         assert "A model release, a benchmark, a standard" in text
+
+    def test_asks_to_cite_an_editors_tip_when_it_bears_on_the_story(self):
+        from hipeac_agents.agents.vision_watch.nodes.digest.prompts import DIGEST_STORIES
+
+        text = " ".join(DIGEST_STORIES.split())
+        assert "source is a board tip was flagged by an editor" in text
+        assert "cite it when it bears on the story it sits in" in text
 
     def test_both_calls_share_the_bottom_line_instruction(self):
         """The full digest and the intro-only rewrite ask for the same cited, 3-4 sentence bottom line."""
