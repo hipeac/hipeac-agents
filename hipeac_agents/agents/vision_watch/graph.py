@@ -11,14 +11,15 @@ from .nodes import cluster, digest, harvest, health, monthly
 from .state import VisionWatchState
 
 
-NODE_ORDER = ("harvest", "health", "cluster", "digest", "intro", "monthly")
+NODE_ORDER = ("harvest", "health", "cluster", "digest", "intro", "edit", "monthly")
 
 
 def build_graph(nodes: list[str], services: Any, models: Models):
     """Build a StateGraph running the requested nodes in spec order.
 
     ``weekly-harvest`` runs ``["harvest", "health"]``; ``weekly-digest`` runs
-    ``["cluster", "digest"]``, or ``["intro"]`` with ``--intro-only``. A node's service boundary is enforced by what
+    ``["cluster", "digest"]``, ``["intro"]`` with ``--intro-only``, or ``["edit"]``
+    with ``--edit``. A node's service boundary is enforced by what
     it is wired with, not by what tools exist. Harvest makes hundreds of
     classification calls and runs on the small model; clustering (one call a
     week) on the base model; the digests, which the board reads, on the
@@ -42,6 +43,8 @@ def build_graph(nodes: list[str], services: Any, models: Models):
             graph.add_node("digest", partial(digest.digest_node, services=services, llm=models.thinking))
         elif name == "intro":
             graph.add_node("intro", partial(digest.intro_node, llm=models.thinking))
+        elif name == "edit":
+            graph.add_node("edit", partial(digest.edit_node, llm=models.thinking))
         elif name == "monthly":
             graph.add_node("monthly", partial(monthly.monthly_node, services=services, llm=models.thinking))
         else:

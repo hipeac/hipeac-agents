@@ -40,3 +40,9 @@ class WeeklyIntro(BaseModel):
     """A recorded week's bottom line, rewritten on its own."""
 
     this_week: str = Field(description=BOTTOM_LINE_FIELD)
+
+
+class EditedDigest(BaseModel):
+    """A recorded week's digest, its story prose lightly edited."""
+
+    markdown: str = Field(description="The digest markdown in full, edited lines and unchanged lines alike")

@@ -30,8 +30,8 @@ from hipeac_agents.services.mail import markdown_to_html
 from hipeac_agents.services.urls import display_domain
 from hipeac_agents.storage import WorkspaceError
 
-from .models import DigestItem, WeeklyDigest, WeeklyIntro
-from .prompts import DIGEST_INTRO, DIGEST_STORIES
+from .models import DigestItem, EditedDigest, WeeklyDigest, WeeklyIntro
+from .prompts import DIGEST_EDIT, DIGEST_INTRO, DIGEST_STORIES
 
 
 logger = logging.getLogger(__name__)
@@ -580,6 +580,116 @@ async def intro_node(state: VisionWatchState, *, llm: Any) -> dict[str, Any]:
     markdown = replace_bottom_line(recorded, resolve_citations(_one_paragraph(intro.this_week), material.refs))
     backup = workspace.rewrite_weekly_digest(week, markdown)
     logger.info("week %s bottom line rewritten; previous digest in %s", week, backup)
+    return {"digest_markdown": markdown}
+
+
+def _story_parts(line: str) -> tuple[str, str] | None:
+    """Split a full story's line into its frozen bold title and its editable prose."""
+    if not line.startswith("**"):
+        return None
+    title, separator, prose = line.partition(".** ")
+    return (title + ".**", prose) if separator else None
+
+
+def _brief_parts(line: str) -> tuple[str, str] | None:
+    """Split a one-line item into its editable prose and its frozen trailing tag."""
+    if not (line.startswith("- ") and line.endswith(")_")):
+        return None
+    prose, separator, tag = line[:-2].rpartition(" _(")
+    return (prose, " _(" + tag + ")_") if separator else None
+
+
+def _check_edited_line(number: int, old: str, new: str) -> None:
+    """Accept an edited line that rewords story prose, refusing anything else.
+
+    :param number: The line's number, for the error message.
+    :param old: The recorded line.
+    :param new: The edited line.
+    :raises ValueError: When the line is not story prose, or its links moved.
+    """
+    if (story := _story_parts(old)) is not None:
+        edited = _story_parts(new)
+        if edited is None or edited[0] != story[0]:
+            raise ValueError(f"line {number}: a story's title may not change")
+        old_prose, new_prose = story[1], edited[1]
+    elif (brief := _brief_parts(old)) is not None:
+        edited = _brief_parts(new)
+        if edited is None or edited[1] != brief[1]:
+            raise ValueError(f"line {number}: an item's tag may not change")
+        old_prose, new_prose = brief[0], edited[0]
+    else:
+        raise ValueError(f"line {number}: only the prose of a story or a one-line item may change")
+
+    if sorted(url for _phrase, url in _LINK.findall(old_prose)) != sorted(
+        url for _phrase, url in _LINK.findall(new_prose)
+    ):
+        raise ValueError(f"line {number}: links may not be added, dropped or re-pointed")
+
+
+def check_edited_digest(original: str, edited: str) -> str:
+    """Accept an edit of a digest's story prose, refusing anything else.
+
+    The edit pass may reword the prose of the full stories and the one-line
+    items — the phrases around the links, never the links themselves. Every
+    other line is frozen: the title, the bottom line, the headings, the
+    question tags, the tips, the converged list and the counts, so the
+    ledger and the layout keep standing behind the digest.
+
+    :param original: The recorded digest.
+    :param edited: The edited digest, as the prose call returned it.
+    :returns: The edited digest, when every change is prose, with line ends
+        normalised to the digest's own (exactly one trailing newline).
+    :raises ValueError: When the edit touches anything but story prose.
+    """
+    old_lines, new_lines = original.splitlines(), edited.splitlines()
+
+    if len(old_lines) != len(new_lines):
+        raise ValueError(
+            f"the edit changed the digest's structure ({len(old_lines)} to {len(new_lines)} lines); "
+            "lines may only be reworded"
+        )
+
+    for number, (old, new) in enumerate(zip(old_lines, new_lines, strict=True), start=1):
+        if old != new:
+            _check_edited_line(number, old, new)
+
+    return "\n".join(new_lines) + "\n"
+
+
+async def edit_node(state: VisionWatchState, *, llm: Any) -> dict[str, Any]:
+    """Reword a recorded week's story prose, and nothing else.
+
+    One prose call sees the digest as printed and returns it lightly edited;
+    code refuses an edit that touches anything but story prose — the title,
+    the bottom line, the tags, the tips and the counts are frozen, and every
+    link stays where it was. The previous digest is backed up; the ledger,
+    signals log and sent marker are left alone, and nothing is sent. An edit
+    that changes nothing writes nothing.
+
+    :param state: The graph state; carries the week.
+    :param llm: The chat model used for the edit.
+    :returns: State updates: the digest markdown.
+    :raises WorkspaceError: If the week has no digest.
+    :raises ValueError: If the edit touches anything but story prose.
+    """
+    week = state.week
+    recorded = workspace.read_weekly_digest(week)
+
+    if recorded is None:
+        raise WorkspaceError(f"no digest for {week}; run weekly-digest first")
+
+    edited = await llm.with_structured_output(EditedDigest).ainvoke(
+        DIGEST_EDIT + "\n\nTHE DIGEST AS PRINTED:\n\n" + recorded
+    )
+    markdown = check_edited_digest(recorded, edited.markdown)
+
+    if markdown == recorded:
+        logger.info("week %s prose unchanged by the edit pass", week)
+        return {"digest_markdown": markdown}
+
+    backup = workspace.rewrite_weekly_digest(week, markdown)
+    logger.info("week %s prose edited; previous digest in %s", week, backup)
+
     return {"digest_markdown": markdown}
 
 

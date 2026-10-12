@@ -5,6 +5,7 @@ Usage::
     ./run python -m hipeac_agents weekly-harvest [--redo]     # Monday early morning, for the week to Sunday
     ./run python -m hipeac_agents weekly-digest [--send] [--redo]  # right after the harvest
     ./run python -m hipeac_agents weekly-digest --on 2026-09-25 --intro-only  # rewrite a recorded bottom line
+    ./run python -m hipeac_agents weekly-digest --on 2026-09-25 --edit  # lightly edit a recorded digest's prose
     ./run python -m hipeac_agents monthly-digest [--month 2026-07] [--send]  # default: the latest complete month
     ./run python -m hipeac_agents simulate-harvest --on 2026-06-24 [--limit 4] [--skip-sweep]
     ./run python -m hipeac_agents snapshot-feeds        # daily: keep busy feeds' whole week
@@ -383,6 +384,11 @@ async def main(argv: list[str] | None = None) -> int:
         help="weekly-digest: rewrite only a recorded digest's bottom line (backed up, never sent)",
     )
     parser.add_argument(
+        "--edit",
+        action="store_true",
+        help="weekly-digest: lightly edit a recorded digest's story prose (backed up, never sent)",
+    )
+    parser.add_argument(
         "--send",
         action="store_true",
         help="digest: email the digest to the board; harvest: email source-health changes to the dev list",
@@ -392,6 +398,10 @@ async def main(argv: list[str] | None = None) -> int:
         parser.error("--intro-only applies to weekly-digest only")
     if args.intro_only and (args.send or args.redo):
         parser.error("--intro-only rewrites a recorded digest; it cannot be combined with --send or --redo")
+    if args.edit and args.command != "weekly-digest":
+        parser.error("--edit applies to weekly-digest only")
+    if args.edit and (args.send or args.redo or args.intro_only):
+        parser.error("--edit polishes a recorded digest; it cannot be combined with --send, --redo or --intro-only")
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
@@ -424,13 +434,14 @@ async def main(argv: list[str] | None = None) -> int:
             redo=args.redo,
         )
 
-    if args.command == "weekly-digest" and args.intro_only:
+    if args.command == "weekly-digest" and (args.intro_only or args.edit):
+        node = "intro" if args.intro_only else "edit"
         _use_data_dir(args.data_dir)
         week = cadence.weekly_label(window[1])
         if workspace.read_weekly_digest(week) is None:
             print(f"no digest for {week}; run weekly-digest first", file=sys.stderr)
             return 2
-        return await _run(["intro"], window=window, data_dir=args.data_dir)
+        return await _run([node], window=window, data_dir=args.data_dir)
 
     if args.command == "weekly-digest":
         _use_data_dir(args.data_dir)

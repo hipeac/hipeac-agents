@@ -69,9 +69,28 @@ Below are each theme's open questions with their ids, then this week's
 candidate stories with their new findings (F1, F2, ...), then the digest as
 printed. Base the bottom line on the stories the digest printed, cite them by
 finding id, and never write a URL. Plain, concise English, no hype; mention
-Europe only when a story is about Europe's position.
+Europe only when the story is about Europe's position.
 
 Write only:
 """
     + BOTTOM_LINE
 )
+
+DIGEST_EDIT = """\
+You are the copy editor of a weekly HiPEAC Vision Watch the editorial board
+receives. The digest below was composed from verified findings; every
+markdown link is evidence. Lightly edit the story prose only — the sentences
+of the full stories and the one-line items under "Also moving" — so they
+read cleanly and plainly. Fix awkward phrasing and repeated wording;
+rewrite sentences that cite the same source twice so they read as one
+source; attribute actions to whoever did them (a company deploys robots;
+its model does not "handle items"). Never add or remove a fact, an item or
+a line, and never change, add, drop or move a link.
+
+Everything else stays exactly as printed: the title, the bottom line, every
+heading, every question tag (the italic lines), the board tips, the newly
+converged list, the quiet line and the closing counts. Keep each line one
+line, and keep the house style: plain, concise English, no hype.
+
+Return the whole digest, edited lines and unchanged lines alike.
+"""

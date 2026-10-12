@@ -13,7 +13,7 @@ from hipeac_agents.agents.vision_watch.nodes import cluster as cluster_node_mod
 from hipeac_agents.agents.vision_watch.nodes import digest as digest_node_mod
 from hipeac_agents.agents.vision_watch.nodes import harvest as harvest_node_mod
 from hipeac_agents.agents.vision_watch.nodes.cluster import GroupingPlan
-from hipeac_agents.agents.vision_watch.nodes.digest import DigestItem, WeeklyDigest
+from hipeac_agents.agents.vision_watch.nodes.digest import DigestItem, EditedDigest, WeeklyDigest
 from hipeac_agents.agents.vision_watch.nodes.harvest import node as harvest_node_impl
 from hipeac_agents.agents.vision_watch.nodes.harvest.models import (
     CandidateList,
@@ -1290,6 +1290,102 @@ class TestReplaceBottomLine:
             replace_bottom_line(markdown, "New.")
 
 
+class TestCheckEditedDigest:
+    """The edit gate: story prose may be reworded; structure, tags and links may not."""
+
+    DIGEST = (
+        "# HiPEAC Vision Watch — Week 2026-W39: H\n"
+        "\n"
+        "Bottom line citing [a finding](https://example.com/a).\n"
+        "\n"
+        "## Physical AI\n"
+        "\n"
+        "**Robots at work.** Sereact [deploys robots](https://example.com/a); its model handles the picking.\n"
+        "_Are robots moving from demos to paid work? → towards paid work_\n"
+        "\n"
+        "Also moving:\n"
+        "\n"
+        "- A lab [showed a demo](https://example.com/b) of flexible sorting. _(Are robots moving from demos to paid work? → towards paid work)_\n"
+        "\n"
+        "## Board tips\n"
+        "\n"
+        "- _A board tip_ — [example.com](https://example.com/tip)\n"
+        "\n"
+        "_1 story and 1 short item from 2 signals this week; all signals are listed in digest-2026-W39-signals.md._\n"
+    )
+
+    @staticmethod
+    def _check(original: str, edited: str) -> str:
+        from hipeac_agents.agents.vision_watch.nodes.digest import check_edited_digest
+
+        return check_edited_digest(original, edited)
+
+    def test_reworded_story_and_one_liner_are_accepted(self):
+        edited = self.DIGEST.replace(
+            "Sereact [deploys robots](https://example.com/a); its model handles the picking.",
+            "Sereact [now deploys robots](https://example.com/a); its model does the picking.",
+        ).replace(
+            "A lab [showed a demo](https://example.com/b) of flexible sorting.",
+            "A lab [demoed](https://example.com/b) flexible sorting.",
+        )
+
+        assert self._check(self.DIGEST, edited) == edited
+
+    def test_re_pointed_link_is_refused(self):
+        edited = self.DIGEST.replace("https://example.com/b", "https://example.com/c")
+
+        with pytest.raises(ValueError, match="re-pointed"):
+            self._check(self.DIGEST, edited)
+
+    def test_added_link_is_refused(self):
+        edited = self.DIGEST.replace("its model handles", "its [model](https://example.com/a) handles")
+
+        with pytest.raises(ValueError, match="links may not"):
+            self._check(self.DIGEST, edited)
+
+    def test_dropped_link_is_refused(self):
+        edited = self.DIGEST.replace("[showed a demo](https://example.com/b) ", "")
+
+        with pytest.raises(ValueError, match="links may not"):
+            self._check(self.DIGEST, edited)
+
+    def test_changed_story_title_is_refused(self):
+        edited = self.DIGEST.replace("**Robots at work.**", "**Robots work now.**")
+
+        with pytest.raises(ValueError, match="title may not change"):
+            self._check(self.DIGEST, edited)
+
+    def test_changed_item_tag_is_refused(self):
+        edited = self.DIGEST.replace(
+            "sorting. _(Are robots moving from demos to paid work? → towards paid work)_",
+            "sorting. _(Are robots moving from demos to paid work? → paid work now)_",
+        )
+
+        with pytest.raises(ValueError, match="tag may not change"):
+            self._check(self.DIGEST, edited)
+
+    def test_changed_bottom_line_is_refused(self):
+        edited = self.DIGEST.replace("Bottom line citing", "Bottom line that cites")
+
+        with pytest.raises(ValueError, match="only the prose"):
+            self._check(self.DIGEST, edited)
+
+    def test_changed_board_tip_is_refused(self):
+        edited = self.DIGEST.replace("- _A board tip_", "- _A reworded tip_")
+
+        with pytest.raises(ValueError, match="only the prose"):
+            self._check(self.DIGEST, edited)
+
+    def test_changed_structure_is_refused(self):
+        with pytest.raises(ValueError, match="structure"):
+            self._check(self.DIGEST, self.DIGEST + "An extra line.\n")
+
+    def test_line_ends_are_normalised(self):
+        """A prose call that drops the trailing newline is not a structural change."""
+
+        assert self._check(self.DIGEST, self.DIGEST.rstrip("\n")) == self.DIGEST
+
+
 class TestIntroNode:
     """``--intro-only``: one call, one line changed, everything else left alone."""
 
@@ -1372,6 +1468,96 @@ class TestIntroNode:
         assert workspace.read_weekly_digest(self.WEEK) == "Not a digest\n"
 
 
+class TestEditNode:
+    """``--edit``: one call, story prose reworded, everything else left alone."""
+
+    WEEK = "2026-W24"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, digest_workspace):
+        pass
+
+    @staticmethod
+    async def _edit(llm, week="2026-W24"):
+        from hipeac_agents.agents.vision_watch.state import VisionWatchState
+
+        return await digest_node_mod.edit_node(VisionWatchState.model_construct(week=week), llm=llm)
+
+    @staticmethod
+    def _handler(markdown: str):
+        return lambda prompt: EditedDigest(markdown=markdown)
+
+    async def test_rewords_story_prose_and_backs_up_the_original(self, llm, digest_workspace):
+        llm.handlers[WeeklyDigest] = make_story_handler()
+        recorded = (await _compose(llm))["digest_markdown"]
+        llm.calls.clear()
+        edited = recorded.replace(
+            "Something moved: [a finding](https://example.com/a).",
+            "The robots reached paid work: [a finding](https://example.com/a).",
+        )
+        llm.handlers[EditedDigest] = self._handler(edited)
+
+        updates = await self._edit(llm)
+
+        assert updates["digest_markdown"] == edited
+        assert workspace.read_weekly_digest(self.WEEK) == edited
+        [backup] = (workspace.workspace_root(digest_workspace) / "_backup").glob(f"{self.WEEK}-*")
+        assert (backup / "digests" / "weekly" / f"digest-{self.WEEK}.md").read_text(encoding="utf-8") == recorded
+        assert not list(workspace.weekly_digest_dir().glob(".*.tmp"))
+
+        [(schema, prompt)] = llm.calls
+        assert schema is EditedDigest
+        assert "**Story in physical-ai.**" in prompt, "the digest as printed"
+
+    async def test_an_edit_that_changes_nothing_writes_nothing(self, llm, digest_workspace):
+        llm.handlers[WeeklyDigest] = make_story_handler()
+        recorded = (await _compose(llm))["digest_markdown"]
+        llm.calls.clear()
+        llm.handlers[EditedDigest] = self._handler(recorded)
+
+        updates = await self._edit(llm)
+
+        assert updates["digest_markdown"] == recorded
+        assert workspace.read_weekly_digest(self.WEEK) == recorded
+        assert not (workspace.workspace_root(digest_workspace) / "_backup").exists()
+
+    async def test_an_edit_that_re_points_a_link_is_refused(self, llm, digest_workspace):
+        llm.handlers[WeeklyDigest] = make_story_handler()
+        recorded = (await _compose(llm))["digest_markdown"]
+        llm.calls.clear()
+        llm.handlers[EditedDigest] = self._handler(
+            recorded.replace("[a finding](https://example.com/a)", "[a finding](https://evil.example/x)")
+        )
+
+        with pytest.raises(ValueError, match="links may not"):
+            await self._edit(llm)
+
+        assert workspace.read_weekly_digest(self.WEEK) == recorded
+        assert not (workspace.workspace_root(digest_workspace) / "_backup").exists()
+
+    async def test_an_edit_of_a_frozen_line_is_refused(self, llm, digest_workspace):
+        llm.handlers[WeeklyDigest] = make_story_handler()
+        recorded = (await _compose(llm))["digest_markdown"]
+        llm.calls.clear()
+        llm.handlers[EditedDigest] = self._handler(
+            recorded.replace("The week's news is in one theme", "All the news is in one theme")
+        )
+
+        with pytest.raises(ValueError, match="only the prose"):
+            await self._edit(llm)
+
+        assert workspace.read_weekly_digest(self.WEEK) == recorded
+        assert not (workspace.workspace_root(digest_workspace) / "_backup").exists()
+
+    async def test_no_digest_yet(self, llm):
+        from hipeac_agents.storage import WorkspaceError
+
+        with pytest.raises(WorkspaceError, match="run weekly-digest first"):
+            await self._edit(llm)
+
+        assert not llm.calls
+
+
 class TestDigestPrompt:
     def test_weighs_by_the_open_questions_not_size_or_money(self):
         from hipeac_agents.agents.vision_watch.nodes.digest.prompts import DIGEST_STORIES
@@ -1400,16 +1586,19 @@ class TestGraph:
         the board reads, to the thinking model."""
         models = Models(small="small", base="base", thinking="thinking")
         compiled = graph.build_graph(
-            ["harvest", "cluster", "digest", "intro", "monthly"], Services(crawl=None, mail=None, vision=None), models
+            ["harvest", "cluster", "digest", "intro", "edit", "monthly"],
+            Services(crawl=None, mail=None, vision=None),
+            models,
         )
 
         def tier(node: str) -> str:
             runnable = compiled.builder.nodes[node].runnable
             return (getattr(runnable, "afunc", None) or runnable.func).keywords["llm"]
 
-        assert [tier(n) for n in ("harvest", "cluster", "digest", "intro", "monthly")] == [
+        assert [tier(n) for n in ("harvest", "cluster", "digest", "intro", "edit", "monthly")] == [
             "small",
             "base",
+            "thinking",
             "thinking",
             "thinking",
             "thinking",

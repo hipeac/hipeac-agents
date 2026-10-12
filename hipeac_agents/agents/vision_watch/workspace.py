@@ -590,11 +590,13 @@ def write_weekly_digest(week: str, markdown: str, data_dir: str | None = None) -
 
 
 def rewrite_weekly_digest(week: str, markdown: str, data_dir: str | None = None) -> Path:
-    """Replace a recorded weekly digest: the write-once rule's one exception, for its bottom line.
+    """Replace a recorded weekly digest: the write-once rule's reviewed exceptions.
 
-    The recorded file is first copied to ``_backup/<week>-<timestamp>/``;
-    the new content is written beside it and moved into place, so the file
-    is never seen half-written. The sent marker stays untouched.
+    Used by ``--intro-only`` (a rewritten bottom line) and ``--edit`` (lightly
+    edited story prose); both are backed up here first. The recorded file is
+    copied to ``_backup/<week>-<timestamp>/``; the new content is written
+    beside it and moved into place, so the file is never seen half-written.
+    The sent marker stays untouched.
 
     :param week: A week label such as ``"2026-W24"``.
     :param markdown: The new digest markdown.
