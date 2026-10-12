@@ -274,7 +274,8 @@ class TestGateCandidateSummary:
 
         one_liner = "Latency-aware validator selection can concentrate stake geographically."
         verdict = GateVerdict(theme_ids=["cybersecurity"], tier=3, summary=one_liner)
-        ctx = HarvestContext(FakeLLM({GateVerdict: verdict}))
+        llm = FakeLLM({GateVerdict: verdict})
+        ctx = HarvestContext(llm)
         crawl = FakeCrawl(pages={"https://arxiv.org/abs/2609.20261": ("Study", "body")})
         raw = "Abstract: " + "We formalize how validator selection affects the security of consensus. " * 8
 
@@ -294,6 +295,8 @@ class TestGateCandidateSummary:
         )
 
         assert findings[0].summary == one_liner
+        # Only a board tip's verdict reads the page; a source item has its own summary.
+        assert not any("Page opening:" in prompt for _, prompt in llm.calls)
 
     async def test_raw_summary_falls_back_when_verdict_skips_it(self):
         from hipeac_agents.agents.vision_watch.nodes.harvest.channels import gate_candidates
@@ -410,6 +413,41 @@ class TestBoardTips:
         # The gate call was told it was judging a board tip.
         gate_prompts = [prompt for schema, prompt in llm.calls if schema.__name__ == "GateVerdict"]
         assert any("board tip" in prompt for prompt in gate_prompts)
+
+    async def test_link_only_tip_judged_on_its_page_scraped_once(self):
+        """Regression (W41): a tip mailed as a bare link has no summary, so the
+        gate must read the tip's page, not judge the headline alone."""
+        from datetime import date as date_cls
+
+        from hipeac_agents.agents.vision_watch.nodes.harvest.channels import harvest_board_tips
+        from hipeac_agents.agents.vision_watch.nodes.harvest.context import HarvestContext
+        from hipeac_agents.agents.vision_watch.nodes.harvest.models import CandidateList, GateVerdict
+        from tests.agents.vision_watch._fakes import FakeLLM
+
+        llm = FakeLLM(
+            {
+                CandidateList: lambda prompt: CandidateList(items=[]),
+                GateVerdict: GateVerdict(theme_ids=["physical-ai"], significance=3),
+            }
+        )
+        body = "The site pauses proof claims: it is flooded with unexplained AI-generated proofs."
+        services, _ = self._services({"https://example.com/tip": ("Changes to the web site", body)})
+
+        findings, _, _ = await harvest_board_tips(
+            HarvestContext(llm),
+            services,
+            [self._message()],
+            date_cls(2026, 6, 6),
+            date_cls(2026, 6, 12),
+            [],
+            self._themes(),
+        )
+
+        assert len(findings) == 1
+        gate_prompts = [prompt for schema, prompt in llm.calls if schema.__name__ == "GateVerdict"]
+        assert len(gate_prompts) == 1
+        assert f"Page opening:\n{body}" in gate_prompts[0]
+        assert services.crawl.scrape_calls == ["https://example.com/tip"]
 
     async def test_linkless_tip_rejected_with_sender_recorded(self):
         from datetime import date as date_cls

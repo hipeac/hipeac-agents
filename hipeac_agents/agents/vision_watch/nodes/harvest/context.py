@@ -145,6 +145,7 @@ class HarvestContext:
         page_title: str,
         themes: list[schemas.ThemeDef],
         tip: bool = False,
+        page_excerpt: str = "",
     ) -> GateVerdict:
         """Run the merged verification gate for one candidate.
 
@@ -154,6 +155,8 @@ class HarvestContext:
         :param item_summary: The candidate's summary.
         :param page_title: The actual title of the fetched page.
         :param themes: The watched themes.
+        :param tip: The candidate is a board tip.
+        :param page_excerpt: The opening of the fetched page, when the verdict should read it.
         :returns: The gate verdict: theme ids, significance, datapoint, title match.
         """
         questions = "\n".join(t.brief() for t in themes)
@@ -161,16 +164,18 @@ class HarvestContext:
         tip_suffix = (
             "\n\nThis candidate is a board tip a human editor flagged. If it fits no "
             "theme, still return the single closest theme id in theme_ids: a tip is "
-            "never off-theme."
+            "never off-theme. Judge it from the page content, not the headline alone."
             if tip
             else ""
         )
+        page_section = f"\n\nPage opening:\n{page_excerpt}" if page_excerpt else ""
 
         return await self._invoke(
             GateVerdict,
             prompts.GATE
             + f"\n\nThemes:\n{questions}"
             + f"\n\nClaimed headline: {item_title}\nClaimed summary: {item_summary}\nActual page title: {page_title}"
+            + page_section
             + tip_suffix,
         )
 

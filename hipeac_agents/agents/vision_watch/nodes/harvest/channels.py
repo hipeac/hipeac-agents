@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 # Candidates per source that reach the full verdict each week.
 PREVERDICT_PICK = 8
 
+# A tip is often mailed as a bare link, with no summary to judge: its verdict
+# reads the opening of the page itself, up to this many characters.
+TIP_PAGE_EXCERPT = 4000
+
 # Newsletters report news a few days late: an item counts in the week its
 # newsletter arrived when it was published at most this many days before.
 NEWSLETTER_GRACE_DAYS = 7
@@ -196,7 +200,10 @@ async def gate_candidates(
 
     if tip:
         verdicts = [
-            await ctx.gate_candidate(c.title, c.summary, page.title, themes, tip=True) for c, page, _ in prepared
+            await ctx.gate_candidate(
+                c.title, c.summary, page.title, themes, tip=True, page_excerpt=page.markdown[:TIP_PAGE_EXCERPT]
+            )
+            for c, page, _ in prepared
         ]
     elif prepared:
         verdicts = await ctx.gate_batch([(c.title, c.summary, page.title) for c, page, _ in prepared], themes)
@@ -946,6 +953,7 @@ async def harvest_board_tips(
             "board-tip",
             "board-tip",
             tip=True,
+            known_pages={candidate.url: page} if page else None,
         )
         for reject in rejects:
             reject.detail = f"board tip from {_display_sender(sender)}" + (
