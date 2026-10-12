@@ -1,0 +1,55 @@
+schema: spec-driven
+
+context: |
+  Repo: hipeac-agents — Python 3.14 (uv, `./run` wrapper) agent collection on LangGraph/LangChain; no web
+  service, no DB. One agent so far: vision-watch (weekly sensing loop for the HiPEAC Vision editorial board,
+  aimed at the 2027 Vision).
+  Pipeline: harvest -> cluster -> digest (weekly), plus monthly. Each agent is a StateGraph; judgement-free
+  logic is plain Python, prompts only for judgement.
+  Services: crawl (Firecrawl), mail (AgentMail), Vision (hipeac-mcp, read-only MCP). Each skippable when unset.
+  Data: filesystem workspace at HIPEAC_AGENTS_DATA_DIR (Nextcloud) — config/ (human-owned themes.yaml,
+  source-catalog.yaml), evidence/<week>/ (write-once findings/rejected/grouping), clusters/ (append-only,
+  one file per theme), digests/weekly|monthly/ (write-once), cache/scrapes/.
+  Glossary:
+  - week: Monday–Sunday editorial window, exactly an ISO week and labelled YYYY-Www; run on Monday for the week just closed.
+  - month: the weeks whose Thursday falls in the calendar month.
+  - finding: a verified development (significance 1–5, themes); rejected items keep a reason.
+  - source class: a kind of voice declared in the catalog (programmes, research, companies, ai-labs, press, ai-news, …);
+    distinct classes drive reach, `primary: false` classes never make a trend converge.
+  - cluster: one ongoing development across weeks; candidate trend = 4 findings, 3 classes, 3 weeks, a primary source.
+  - board tip: editor-flagged lead mailed to the tips mailbox.
+  - question id: `<theme>.<n>`, an open question by its position in themes.yaml (from 1); NEW for a topic outside them.
+  - ledger: `digests/weekly/digest-<week>-ledger.json`, every printed weekly item with its question id and text,
+    lean, cluster, status and early flag; the monthly digest's gate reads it.
+  Commits: Conventional Commits, one line, no attribution trailers.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
