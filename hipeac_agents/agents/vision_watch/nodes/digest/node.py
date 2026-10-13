@@ -171,7 +171,9 @@ def story_material(
                 f'{key} Story "{data["cluster"].name}" — {status}; '
                 f"{tally_text(data['entries'])}; {len(data['this_week'])} new this week"
             )
-            for entry in _ranked(data["this_week"])[:FINDINGS_PER_STORY]:
+            # An editor's tip often scores low; it is never cut from its story.
+            shown = sorted(_ranked(data["this_week"]), key=lambda entry: entry.source_id != "board-tip")
+            for entry in shown[:FINDINGS_PER_STORY]:
                 ref = f"F{len(material.refs) + 1}"
                 material.refs[ref] = entry.url
                 material.finding_ids[entry.url] = entry.finding_id

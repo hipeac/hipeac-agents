@@ -1049,6 +1049,23 @@ class TestStorySelection:
         assert any("Note e1 (source: robot-report)" in line for line in lines)
         assert sum("flagged by an editor" in line for line in lines) == 1
 
+    def test_material_keeps_a_weak_tip_in_a_busy_story(self, themes, data_dir):
+        from hipeac_agents.agents.vision_watch.nodes.digest.node import FINDINGS_PER_STORY, story_material
+
+        tip = _digest_entry("2026-W24", "tip", "https://x/tip", significance=1).model_copy(
+            update={"source_id": "board-tip"}
+        )
+        strong = [_digest_entry("2026-W24", f"e{n}", f"https://x/{n}", significance=5) for n in range(5)]
+        story = self._cluster_data("story", "agentic-ai", [*strong, tip])
+
+        material = story_material(
+            themes, {"agentic-ai": [("story", story)]}, {}, workspace.read_source_catalog(data_dir)
+        )
+
+        assert "https://x/tip" in material.refs.values()
+        assert "Note tip (source: board tip, flagged by an editor)" in material.text
+        assert len(material.refs) == FINDINGS_PER_STORY
+
 
 class TestComposeDigest:
     """Assembly rules, enforced in code whatever the prose call returns."""
